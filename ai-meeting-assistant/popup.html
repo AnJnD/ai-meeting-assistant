@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>AI Meeting Assistant</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; width: 300px; padding: 14px; margin: 0; background: #f8f9fa; }
+    h3 { margin: 0 0 12px; color: #202124; text-align: center; font-size: 15px; }
+    .tabs { display: flex; margin-bottom: 12px; border-radius: 6px; overflow: hidden; border: 1px solid #dadce0; }
+    .tab-btn { flex: 1; padding: 7px 0; font-size: 12px; font-weight: bold; border: none; cursor: pointer; background: #fff; color: #5f6368; }
+    .tab-btn.active { background: #1a73e8; color: white; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    label { font-size: 11px; color: #5f6368; display: block; margin-bottom: 3px; font-weight: 600; }
+    input, select { width: 100%; padding: 7px 9px; border: 1px solid #dadce0; border-radius: 5px; font-size: 12px; outline: none; background: #fff; margin-bottom: 8px; }
+    input:focus, select:focus { border-color: #1a73e8; }
+    .row { display: flex; gap: 5px; align-items: center; margin-bottom: 4px; }
+    .row input { margin-bottom: 0; flex: 1; }
+    .btn { width: 100%; padding: 9px; margin-bottom: 7px; font-size: 13px; font-weight: bold; border: none; border-radius: 5px; cursor: pointer; }
+    .btn-blue { background: #1a73e8; color: white; }
+    .btn-blue:hover { background: #1557b0; }
+    .btn-red { background: #ea4335; color: white; margin-bottom: 0; }
+    .btn-red:hover { background: #c5221f; }
+    .btn-green { background: #34a853; color: white; font-size: 12px; padding: 7px 12px; width: auto; margin-bottom: 0; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; white-space: nowrap; }
+    .btn-green:hover { background: #2d8f47; }
+    .btn-icon { background: #fff; border: 1px solid #dadce0; border-radius: 5px; padding: 6px 8px; cursor: pointer; font-size: 13px; margin-bottom: 0; white-space: nowrap; flex-shrink: 0; }
+    .btn-icon:hover { background: #f1f3f4; }
+    .btn-test { background: #fff; color: #1a73e8; border: 1px solid #aecbfa; border-radius: 5px; font-size: 11px; padding: 5px 10px; cursor: pointer; width: 100%; margin-top: 2px; margin-bottom: 6px; font-weight: 600; }
+    .btn-test:hover { background: #e8f0fe; }
+    .btn-test:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status { text-align: center; font-size: 11px; color: #5f6368; margin-top: 6px; }
+    .msg { font-size: 11px; margin-top: 4px; min-height: 14px; }
+    .msg.ok { color: #34a853; }
+    .msg.err { color: #ea4335; }
+    .note { font-size: 10px; color: #80868b; background: #f1f3f4; border-radius: 4px; padding: 6px 8px; margin-top: 4px; line-height: 1.5; }
+    .provider-info { font-size: 11px; color: #3c4043; background: #e8f0fe; border-radius: 4px; padding: 6px 9px; margin-bottom: 10px; line-height: 1.5; }
+    .section-title { font-size: 12px; font-weight: 700; color: #202124; margin-bottom: 8px; }
+    .err-msg { font-size: 11px; color: #ea4335; margin-top: 4px; min-height: 14px; }
+  </style>
+</head>
+<body>
+  <h3>🎙️ AI Meeting Assistant</h3>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="control">▶ Control</button>
+    <button class="tab-btn" data-tab="settings">⚙ Settings</button>
+  </div>
+
+  <!-- CONTROL TAB -->
+  <div class="tab-panel active" id="tab-control">
+    <div id="provider-display" class="provider-info">Chưa cài API key. Vào Settings.</div>
+    <button class="btn btn-blue" id="startBtn">▶ Start AI Assistant</button>
+    <button class="btn btn-red"  id="stopBtn">■ Stop AI Assistant</button>
+    <div class="status" id="statusText">Status: Inactive</div>
+    <div class="err-msg" id="errorMsg"></div>
+  </div>
+
+  <!-- SETTINGS TAB -->
+  <div class="tab-panel" id="tab-settings">
+    <div class="section-title">🤖 AI Provider</div>
+    <label>Provider</label>
+    <select id="providerSelect">
+      <option value="gemini">Google Gemini</option>
+      <option value="openai">OpenAI</option>
+    </select>
+
+    <div id="gemini-settings">
+      <label>Gemini API Key</label>
+      <div class="row">
+        <input type="password" id="geminiKeyInput" placeholder="AIza..." />
+        <button class="btn-icon" id="toggleGeminiKey" title="Hiện/ẩn key">👁</button>
+        <button class="btn-green" id="saveGeminiBtn">Save</button>
+      </div>
+      <button class="btn-test" id="testGeminiBtn">🔍 Kiểm tra API Key</button>
+      <div class="msg" id="geminiKeyStatus"></div>
+      <div class="note">🔗 <b>aistudio.google.com</b><br>Model: Gemini Flash (tự động dùng bản mới nhất)</div>
+    </div>
+
+    <div id="openai-settings" style="display:none;">
+      <label>OpenAI API Key</label>
+      <div class="row">
+        <input type="password" id="openaiKeyInput" placeholder="sk-..." />
+        <button class="btn-icon" id="toggleOpenaiKey" title="Hiện/ẩn key">👁</button>
+        <button class="btn-green" id="saveOpenaiBtn">Save</button>
+      </div>
+      <button class="btn-test" id="testOpenaiBtn">🔍 Kiểm tra API Key</button>
+      <div class="msg" id="openaiKeyStatus"></div>
+      <div class="note">🔗 <b>platform.openai.com</b><br>Model: gpt-4o-mini</div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
