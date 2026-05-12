@@ -43,6 +43,7 @@ const STORAGE_PREFIX       = 'mt_buf:';
 
 // UI state
 let isMinimized       = false;
+let wasDragged        = false;
 let userIsScrolling   = false; // track nếu user đang scroll lên đọc
 let scrollTimer       = null;
 
@@ -663,6 +664,9 @@ function injectOverlay() {
 
   makeDraggable(el, document.getElementById('ai-drag'));
   makeResizable(el, document.getElementById('ai-resize-handle'));
+  document.getElementById('ai-drag').addEventListener('click', e => {
+    if (isMinimized && !wasDragged && !e.target.closest('.ai-win-btn')) toggleMinimize();
+  });
 }
 
 // ── Minimize / Restore ──────────────────────────────────────────
@@ -672,8 +676,10 @@ function toggleMinimize() {
   const btn = document.getElementById('ai-min');
   if (isMinimized) {
     ov.dataset.prevHeight = ov.style.getPropertyValue('height');
+    ov.dataset.prevWidth  = ov.style.getPropertyValue('width');
     ov.style.removeProperty('height');
     ov.style.removeProperty('min-height');
+    ov.style.removeProperty('width');
     ov.classList.add('minimized');
     btn.textContent = '□';
     btn.title       = 'Khôi phục';
@@ -681,6 +687,9 @@ function toggleMinimize() {
     ov.classList.remove('minimized');
     if (ov.dataset.prevHeight) {
       ov.style.setProperty('height', ov.dataset.prevHeight, 'important');
+    }
+    if (ov.dataset.prevWidth) {
+      ov.style.setProperty('width', ov.dataset.prevWidth, 'important');
     }
     btn.textContent = '−';
     btn.title       = 'Thu nhỏ';
@@ -768,12 +777,14 @@ function makeDraggable(el, handle) {
   handle.addEventListener('mousedown', e => {
     if (e.target.closest('.ai-win-btn')) return;
     e.preventDefault();
+    wasDragged = false;
     const r = el.getBoundingClientRect();
     sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top;
     el.style.setProperty('right', 'auto', 'important');
     el.style.setProperty('left',  sl + 'px', 'important');
     el.style.setProperty('top',   st + 'px', 'important');
     const mv = ev => {
+      wasDragged = true;
       const nx = Math.max(0, Math.min(window.innerWidth  - el.offsetWidth, sl + ev.clientX - sx));
       const ny = Math.max(0, Math.min(window.innerHeight - 40,             st + ev.clientY - sy));
       el.style.setProperty('left', nx + 'px', 'important');
