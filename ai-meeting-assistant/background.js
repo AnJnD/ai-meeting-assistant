@@ -1,4 +1,4 @@
-// background.js v5.5.0 — Gemini + OpenAI, plain text output
+// background.js v6.0.0 — Gemini + OpenAI, popup-based UI
 
 let cachedGeminiModel = null;
 let cachedGeminiModelExpiry = 0;
@@ -6,20 +6,20 @@ let cachedGeminiModelExpiry = 0;
 const GEMINI_MAX_OUTPUT = {
   summary:  2048,
   reply:    1024,
-  gijiroku: 12000
+  gijiroku: 2000   // ~3000 Japanese chars ≈ 2–3 A4 pages
 };
 const OPENAI_MAX_OUTPUT = {
   summary:  2048,
   reply:    1024,
-  gijiroku: 15000
+  gijiroku: 2000
 };
 
 const GIJIROKU_CHAR_LIMIT = {
-  gemini: Math.floor(12000 * 1.5),  // ~18000 chars
-  openai: Math.floor(15000 * 1.5)   // ~22500 chars
+  gemini: 3000,
+  openai: 3000
 };
 
-const MAX_TRANSCRIPT_CHARS = 24000;
+const MAX_TRANSCRIPT_CHARS = 30000;
 const API_TIMEOUT_MS = 30000; // 30s timeout cho mọi API call
 
 function smartTruncate(text, maxChars) {
@@ -107,7 +107,7 @@ ${isTruncated ? '- ※ トランスクリプトが長いため重要部分を抽
 - 会議名はトランスクリプトの内容から適切に推測すること
 - 各セクションの見出しは必ず【】で囲むこと
 - 発言者名はトランスクリプトに記載された通りに使用すること
-- 【重要】出力の合計文字数を${charLimit}文字以内に収めること。上限に近づいたら簡潔にまとめて必ず最後まで書き切ること
+- 【重要】出力はA4用紙1ページ（約800〜1000文字）に収まるよう簡潔にまとめること。内容が多い場合でも最大2ページ（${charLimit}文字以内）を絶対に超えないこと。上限に近づいたら各セクションを簡潔な箇条書きにまとめ、必ず最後まで書き切ること
 
 【出力フォーマット — 以下の構成を厳守】
 
@@ -159,15 +159,119 @@ ${safeText}`;
   }
 }
 
+// ── Icon state management ────────────────────────────────────────
+let _iconVersion = 0;
+
+async function makeGrayIconData() {
+  const sizes = [16, 32, 48, 128];
+  const result = {};
+  for (const size of sizes) {
+    try {
+      const url  = chrome.runtime.getURL(`icons/icon-${size}.png`);
+      const resp = await fetch(url);
+      const blob = await resp.blob();
+      const bmp  = await createImageBitmap(blob);
+      const cv   = new OffscreenCanvas(size, size);
+      const ctx  = cv.getContext('2d');
+      ctx.filter = 'grayscale(1) opacity(0.45)';
+      ctx.drawImage(bmp, 0, 0);
+      result[size] = ctx.getImageData(0, 0, size, size);
+    } catch(_) {}
+  }
+  return result;
+}
+
+async function setTabIconGray(tabId) {
+  const v = ++_iconVersion;
+  const data = await makeGrayIconData();
+  if (v !== _iconVersion) return; // a newer color/gray op won — abort
+  if (!Object.keys(data).length) return;
+  try {
+    const opts = { imageData: data };
+    if (tabId != null) opts.tabId = tabId;
+    chrome.action.setIcon(opts);
+  } catch(_) {}
+}
+
+function setTabIconColor(tabId) {
+  ++_iconVersion; // invalidate any pending async gray operation
+  try {
+    const opts = { path: { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png', 128: 'icons/icon-128.png' } };
+    if (tabId != null) opts.tabId = tabId;
+    chrome.action.setIcon(opts);
+  } catch(_) {}
+}
+
+// Set gray globally when service worker starts
+setTabIconGray(null);
+
+// Gray icon on meeting tab load (before content script sends badge)
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete' || !tab.url) return;
+  if (/^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com)\//.test(tab.url)) {
+    setTabIconGray(tabId);
+  }
+});
+
+// ── Keyboard commands ────────────────────────────────────────────
+chrome.commands?.onCommand.addListener(async (command) => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !tab.url) return;
+    if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) return;
+
+    const hostMatches = /^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com)\//.test(tab.url);
+    if (!hostMatches) return;
+
+    const send = (msg) => new Promise(resolve =>
+      chrome.tabs.sendMessage(tab.id, msg, res => {
+        void chrome.runtime.lastError; // swallow "no receiver" error
+        resolve(res);
+      })
+    );
+
+    if (command === 'toggle-assistant') {
+      const status = await send({ action: 'get_status' });
+      if (status?.active) await send({ action: 'stop' });
+      else {
+        // Need API key before starting
+        const cfg = await chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey']);
+        const provider = cfg.aiProvider || 'gemini';
+        const key = provider === 'openai' ? cfg.openaiApiKey : cfg.geminiApiKey;
+        if (!key) return; // silent — user needs to open popup
+        const first = await send({ action: 'start' });
+        // If content script wasn't loaded, inject then retry once
+        if (!first) {
+          try {
+            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+            await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ['styles.css'] });
+            await new Promise(r => setTimeout(r, 400));
+            await send({ action: 'start' });
+          } catch (_) {}
+        }
+      }
+    } else if (command === 'toggle-minimize') {
+      await send({ action: 'toggle_minimize' });
+    }
+  } catch (_) {}
+});
+
 // ── Message Router ───────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  // Badge update từ content script
+  // Badge + icon update từ content script
   if (request.action === 'set_badge') {
     const tabId = sender.tab?.id;
     if (tabId != null) {
       chrome.action.setBadgeText({ text: request.text || '', tabId });
       if (request.text) {
         chrome.action.setBadgeBackgroundColor({ color: request.color || '#1a73e8', tabId });
+      }
+      // Active (green signal) → color icon, no badge dot; else → gray icon
+      if (request.color === '#34a853') {
+        setTabIconColor(tabId);
+        chrome.action.setBadgeText({ text: '', tabId }); // xóa badge dot
+      } else {
+        setTabIconGray(tabId);
       }
     }
     return false;

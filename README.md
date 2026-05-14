@@ -4,12 +4,14 @@ Chrome extension hỗ trợ cuộc họp tiếng Nhật — ghi transcript realt
 
 ## Tính năng chính
 
-- **Transcript realtime** — Đọc phụ đề (CC) từ Google Meet / Microsoft Teams, hiển thị theo từng người nói
+- **Standard browser popup** — UI hiển thị ngay tại icon extension (không phải overlay), đóng khi click ra ngoài, capture vẫn chạy ngầm
+- **Icon trạng thái** — Icon xám khi chưa Start, icon màu xanh khi đang ghi
+- **Transcript realtime** — Đọc phụ đề (CC) từ Google Meet / Microsoft Teams, hiển thị theo từng người nói trong popup
 - **Phân biệt người nói** — Tự động tách tên người nói (hỗ trợ tên Latin, Kanji, Katakana, Korean)
 - **Standby Mode** — Tự động ghi ngầm ngay khi mở trang họp, không cần bấm Start
 - **Tạo 議事録** — AI tạo biên bản họp chuẩn format công ty Nhật chỉ với 1 nút bấm
 - **Tự động chọn model mới nhất** — Luôn sử dụng Gemini Flash phiên bản mới nhất
-- **Tự động lưu** — Transcript được lưu mỗi 15 giây, phục hồi khi reload trang
+- **Tự động lưu** — Transcript được lưu liên tục vào Chrome Storage, phục hồi khi mở lại popup
 
 ## Nền tảng hỗ trợ
 
@@ -45,20 +47,21 @@ Chrome extension hỗ trợ cuộc họp tiếng Nhật — ghi transcript realt
 
 1. Vào cuộc họp trên Google Meet hoặc Microsoft Teams
 2. Bật phụ đề (CC) trên nền tảng họp
-3. Bấm icon extension → **"Start AI Assistant"**
-4. Transcript hiển thị realtime trong overlay
-5. Khi cần biên bản họp → bấm **"議事録作成"**
+3. Bấm icon extension → tab **Control** → bấm **"Start"**
+4. Transcript hiển thị realtime trong popup; đóng popup → capture vẫn chạy ngầm, mở lại thì transcript đã cập nhật
+5. Khi cần biên bản họp → bấm **"議事録"** → kết quả hiển thị trong popup
+6. Bấm **"Stop"** để kết thúc phiên
 
 ## Cấu trúc thư mục
 
 ```
 ai-meeting-assistant/
 ├── manifest.json      # Chrome extension manifest (MV3)
-├── background.js      # Service worker — xử lý API calls
-├── content.js         # Content script — UI overlay + caption scraping
-├── popup.html         # Popup settings UI
-├── popup.js           # Popup logic
-├── styles.css         # Overlay styles
+├── background.js      # Service worker — xử lý API calls, quản lý icon state
+├── content.js         # Content script — scrape caption + ghi vào Chrome Storage
+├── popup.html         # Extension popup UI (400px, transcript + AI actions)
+├── popup.js           # Popup logic — đọc storage, render transcript, gọi AI
+├── styles.css         # (trống — overlay đã bị xoá)
 └── HUONG_DAN_SU_DUNG.md  # Hướng dẫn chi tiết (tiếng Việt)
 ```
 

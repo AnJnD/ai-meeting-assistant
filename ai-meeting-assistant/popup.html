@@ -4,88 +4,772 @@
   <meta charset="UTF-8">
   <title>AI Meeting Assistant</title>
   <style>
-    * { box-sizing: border-box; }
-    body { font-family: 'Segoe UI', sans-serif; width: 300px; padding: 14px; margin: 0; background: #f8f9fa; }
-    h3 { margin: 0 0 12px; color: #202124; text-align: center; font-size: 15px; }
-    .tabs { display: flex; margin-bottom: 12px; border-radius: 6px; overflow: hidden; border: 1px solid #dadce0; }
-    .tab-btn { flex: 1; padding: 7px 0; font-size: 12px; font-weight: bold; border: none; cursor: pointer; background: #fff; color: #5f6368; }
-    .tab-btn.active { background: #1a73e8; color: white; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, sans-serif;
+      font-size: 13px;
+      width: 400px;
+      background: #fff;
+      color: #202124;
+      overflow: hidden; /* popup không cuộn dọc */
+    }
+
+    /* ── Header ── */
+    .p-header {
+      background: linear-gradient(180deg, #2d3748 0%, #1f2937 100%);
+      padding: 9px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #fff;
+    }
+    .brand-mark {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, #1a73e8, #0d47a1);
+      flex-shrink: 0;
+    }
+    .brand-mark svg { width: 14px; height: 14px; }
+    .header-title {
+      font-size: 13px;
+      font-weight: 700;
+      flex: 1;
+      white-space: nowrap;
+    }
+    .status-pill {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(255,255,255,.14);
+      color: rgba(255,255,255,.75);
+      white-space: nowrap;
+    }
+    .status-pill.active {
+      background: #34a853;
+      color: #fff;
+    }
+    .status-pill.stopped {
+      background: #ea4335;
+      color: #fff;
+    }
+    .status-pill .s-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: blink 1.4s infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #e8eaed;
+      background: #f8f9fa;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 8px 6px;
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      background: transparent;
+      color: #5f6368;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: color .15s, border-color .15s;
+    }
+    .tab-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+    .tab-btn:hover { color: #1a73e8; background: rgba(26,115,232,.04); }
+    .tab-btn.active { color: #1a73e8; border-bottom-color: #1a73e8; background: #fff; }
+
+    /* ── Tab panels ── */
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
-    label { font-size: 11px; color: #5f6368; display: block; margin-bottom: 3px; font-weight: 600; }
-    input, select { width: 100%; padding: 7px 9px; border: 1px solid #dadce0; border-radius: 5px; font-size: 12px; outline: none; background: #fff; margin-bottom: 8px; }
+
+    /* ── Control tab content ── */
+    .p-body { padding: 10px 12px; }
+
+    /* Provider info */
+    .provider-info {
+      font-size: 11px;
+      color: #3c4043;
+      background: #e8f0fe;
+      border-radius: 5px;
+      padding: 6px 9px;
+      margin-bottom: 10px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .provider-info svg { flex-shrink: 0; width: 14px; height: 14px; }
+
+    /* Error */
+    .err-msg {
+      font-size: 11px;
+      color: #c5221f;
+      min-height: 14px;
+      margin-bottom: 6px;
+    }
+
+    /* Buttons */
+    .btn {
+      width: 100%;
+      padding: 9px;
+      font-size: 13px;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background .15s;
+    }
+    .btn svg { width: 13px; height: 13px; flex-shrink: 0; }
+    .btn-blue { background: #1a73e8; color: #fff; }
+    .btn-blue:hover { background: #1557b0; }
+    .btn-blue:disabled { background: #bdbdbd; cursor: not-allowed; }
+    .btn-red { background: #ea4335; color: #fff; }
+    .btn-red:hover { background: #c5221f; }
+    .btn-outline { background: #fff; color: #5f6368; border: 1.5px solid #dadce0; }
+    .btn-outline:hover { background: #f1f3f4; }
+    .stopped-actions { display: flex; gap: 8px; }
+
+    /* ── Sections (active view) ── */
+    .p-section {
+      margin-bottom: 8px;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-bottom: 4px;
+      flex-wrap: wrap;
+    }
+    .section-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      color: #5f6368;
+    }
+    .section-title.purple { color: #7b1fa2; }
+    .platform-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .platform-badge svg { width: 10px; height: 10px; }
+    .badge-meet   { background: #e8f0fe; color: #1a73e8; }
+    .badge-teams  { background: #ede7f6; color: #512da8; }
+    .badge-mic    { background: #e6f4ea; color: #137333; }
+    .cc-icon {
+      font-size: 10px;
+      font-weight: 800;
+      padding: 1px 5px;
+      border-radius: 3px;
+      min-width: 24px;
+      height: 17px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .cc-on  { background: #e6f4ea; color: #137333; border: 1.5px solid #34a853; }
+    .cc-off { background: #fce8e6; color: #c5221f; border: 1.5px solid #ea4335; }
+    .cc-searching { background: #e8f0fe; color: #1a73e8; border: 1.5px solid #1a73e8; animation: blink 1s infinite; }
+    .cc-slash {
+      position: absolute;
+      left: 2px; right: 2px; top: 50%;
+      height: 1.5px;
+      background: #ea4335;
+      transform: translateY(-50%) rotate(-20deg);
+    }
+    .spacer { flex: 1; }
+    .icon-btn {
+      background: #fff;
+      border: 1px solid #dadce0;
+      border-radius: 10px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: #5f6368;
+      white-space: nowrap;
+      transition: background .15s;
+    }
+    .icon-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+    .icon-btn:hover { background: #f1f3f4; color: #202124; }
+    .icon-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .icon-btn.danger { color: #c5221f; border-color: #f28b82; }
+    .icon-btn.danger:hover { background: #fce8e6; }
+    .icon-btn.blue { color: #1a73e8; border-color: #aecbfa; }
+    .icon-btn.blue:hover { background: #e8f0fe; }
+
+    /* ── Transcript box ── */
+    .transcript-box {
+      background: #f8f9fa;
+      border: 1px solid #e8eaed;
+      border-radius: 6px;
+      height: 138px;
+      overflow-y: auto;
+      padding: 7px 9px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #202124;
+      cursor: text;
+      user-select: text;
+    }
+    .transcript-box .placeholder {
+      color: #9aa0a6;
+      font-style: italic;
+      font-size: 12px;
+    }
+    .speaker-line {
+      margin-bottom: 3px;
+      display: flex;
+      align-items: baseline;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+    .spk-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 10px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .spk-text    { font-size: 13px; color: #202124; line-height: 1.5; }
+    .spk-interim { opacity: .7; }
+    .interim-text { font-size: 13px; color: #5f8fd4; font-style: italic; line-height: 1.5; }
+
+    .ai-speaker-a { background:#e8f0fe; color:#1a73e8; }
+    .ai-speaker-b { background:#fce8e6; color:#c5221f; }
+    .ai-speaker-c { background:#e6f4ea; color:#137333; }
+    .ai-speaker-d { background:#fff8e1; color:#f57f17; }
+    .ai-speaker-e { background:#f3e8fd; color:#7b1fa2; }
+    .ai-speaker-f { background:#e0f7fa; color:#006064; }
+
+    /* ── Footer row ── */
+    .footer-row {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      margin-top: 5px;
+      flex-wrap: wrap;
+    }
+
+    /* ── Saved indicator ── */
+    .saved-indicator {
+      font-size: 10px;
+      color: #7b1fa2;
+      background: #f3e8fd;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .saved-indicator:empty { display: none; }
+    .saved-indicator svg { width: 10px; height: 10px; }
+
+    /* Gijiroku action button */
+    .action-btn {
+      background: #9c27b0;
+      color: #fff;
+      border: none;
+      border-radius: 14px;
+      padding: 4px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      transition: background .15s;
+    }
+    .action-btn svg { width: 11px; height: 11px; }
+    .action-btn:hover { background: #6a1b9a; }
+    .action-btn:disabled { background: #bdbdbd; cursor: not-allowed; }
+
+    /* ── Result box (gijiroku) ── */
+    .result-box {
+      background: #fff;
+      border: 1.5px solid #9c27b0;
+      border-radius: 6px;
+      height: 148px;
+      overflow-y: auto;
+      padding: 8px 10px;
+      font-size: 12.5px;
+      line-height: 1.7;
+      color: #202124;
+      white-space: pre-wrap;
+      font-family: 'Meiryo', 'Yu Gothic', 'Segoe UI', sans-serif;
+    }
+    .result-box.loading { color: #9aa0a6; font-style: italic; }
+
+    /* ── Loading bar ── */
+    .loading-bar-wrap {
+      position: relative;
+      height: 0;
+    }
+    .loading-bar {
+      height: 2px;
+      background: linear-gradient(90deg, transparent 0%, #9c27b0 40%, #fbbc04 60%, transparent 100%);
+      background-size: 200% 100%;
+      animation: loadslide 1.2s linear infinite;
+      border-radius: 3px;
+      display: none;
+    }
+    .loading-bar.active { display: block; }
+    @keyframes loadslide { 0%{background-position:100% 0} 100%{background-position:-100% 0} }
+
+    /* ── Divider ── */
+    .p-divider { border: none; border-top: 1px solid #e8eaed; margin: 8px 0; }
+
+    /* ── Settings tab ── */
+    .settings-body { padding: 12px; }
+    label {
+      font-size: 11px;
+      color: #5f6368;
+      display: block;
+      margin-bottom: 3px;
+      font-weight: 600;
+    }
+    input, select {
+      width: 100%;
+      padding: 7px 9px;
+      border: 1px solid #dadce0;
+      border-radius: 5px;
+      font-size: 12px;
+      outline: none;
+      background: #fff;
+      margin-bottom: 8px;
+      color: #202124;
+    }
     input:focus, select:focus { border-color: #1a73e8; }
     .row { display: flex; gap: 5px; align-items: center; margin-bottom: 4px; }
     .row input { margin-bottom: 0; flex: 1; }
-    .btn { width: 100%; padding: 9px; margin-bottom: 7px; font-size: 13px; font-weight: bold; border: none; border-radius: 5px; cursor: pointer; }
-    .btn-blue { background: #1a73e8; color: white; }
-    .btn-blue:hover { background: #1557b0; }
-    .btn-red { background: #ea4335; color: white; margin-bottom: 0; }
-    .btn-red:hover { background: #c5221f; }
-    .btn-green { background: #34a853; color: white; font-size: 12px; padding: 7px 12px; width: auto; margin-bottom: 0; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; white-space: nowrap; }
-    .btn-green:hover { background: #2d8f47; }
-    .btn-icon { background: #fff; border: 1px solid #dadce0; border-radius: 5px; padding: 6px 8px; cursor: pointer; font-size: 13px; margin-bottom: 0; white-space: nowrap; flex-shrink: 0; }
+    .btn-icon {
+      background: #fff;
+      border: 1px solid #dadce0;
+      border-radius: 5px;
+      padding: 6px 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #5f6368;
+      flex-shrink: 0;
+    }
     .btn-icon:hover { background: #f1f3f4; }
-    .btn-test { background: #fff; color: #1a73e8; border: 1px solid #aecbfa; border-radius: 5px; font-size: 11px; padding: 5px 10px; cursor: pointer; width: 100%; margin-top: 2px; margin-bottom: 6px; font-weight: 600; }
+    .btn-icon svg { width: 14px; height: 14px; }
+    .btn-green {
+      background: #34a853;
+      color: #fff;
+      font-size: 12px;
+      padding: 7px 10px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: 700;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .btn-green:hover { background: #2d8f47; }
+    .btn-test {
+      background: #fff;
+      color: #1a73e8;
+      border: 1px solid #aecbfa;
+      border-radius: 5px;
+      font-size: 11px;
+      padding: 5px 10px;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 2px;
+      margin-bottom: 6px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+    }
     .btn-test:hover { background: #e8f0fe; }
-    .btn-test:disabled { opacity: 0.6; cursor: not-allowed; }
-    .status { text-align: center; font-size: 11px; color: #5f6368; margin-top: 6px; }
-    .msg { font-size: 11px; margin-top: 4px; min-height: 14px; }
-    .msg.ok { color: #34a853; }
-    .msg.err { color: #ea4335; }
-    .note { font-size: 10px; color: #80868b; background: #f1f3f4; border-radius: 4px; padding: 6px 8px; margin-top: 4px; line-height: 1.5; }
-    .provider-info { font-size: 11px; color: #3c4043; background: #e8f0fe; border-radius: 4px; padding: 6px 9px; margin-bottom: 10px; line-height: 1.5; }
-    .section-title { font-size: 12px; font-weight: 700; color: #202124; margin-bottom: 8px; }
-    .err-msg { font-size: 11px; color: #ea4335; margin-top: 4px; min-height: 14px; }
+    .btn-test:disabled { opacity: .6; cursor: not-allowed; }
+    .btn-test svg { width: 12px; height: 12px; }
+    .section-title-settings {
+      font-size: 12px;
+      font-weight: 700;
+      color: #202124;
+      margin-bottom: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .section-title-settings svg { width: 13px; height: 13px; flex-shrink: 0; }
+    .msg { font-size: 11px; margin-top: 4px; min-height: 14px; display: flex; gap: 4px; align-items: flex-start; }
+    .msg.ok  { color: #137333; }
+    .msg.err { color: #c5221f; }
+    .msg svg { width: 12px; height: 12px; flex-shrink: 0; margin-top: 1px; }
+    .note {
+      font-size: 10px;
+      color: #80868b;
+      background: #f1f3f4;
+      border-radius: 4px;
+      padding: 6px 8px;
+      margin-top: 4px;
+      line-height: 1.5;
+      display: flex;
+      gap: 5px;
+      align-items: flex-start;
+    }
+    .note svg { flex-shrink: 0; margin-top: 1px; width: 12px; height: 12px; }
+
+    /* ICO spin */
+    @keyframes ico-spin { to { transform: rotate(360deg); } }
+    .ico-spin { animation: ico-spin .9s linear infinite; transform-origin: 50% 50%; }
+
+    /* ── Custom confirm dialog ── */
+    .confirm-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.28);
+      z-index: 9999;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 20px;
+    }
+    .confirm-box {
+      background: #fff;
+      border-radius: 8px;
+      padding: 14px 16px 12px;
+      width: 320px;
+      box-shadow: 0 6px 24px rgba(0,0,0,.22);
+    }
+    .confirm-box p {
+      font-size: 12.5px;
+      color: #202124;
+      line-height: 1.55;
+      margin-bottom: 12px;
+      white-space: pre-line;
+    }
+    .confirm-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .btn-c-cancel {
+      background: #fff;
+      color: #5f6368;
+      border: 1.5px solid #dadce0;
+      border-radius: 5px;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-c-cancel:hover { background: #f1f3f4; }
+    .btn-c-ok {
+      background: #ea4335;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-c-ok:hover { background: #c5221f; }
   </style>
 </head>
 <body>
-  <h3>🎙️ AI Meeting Assistant</h3>
+
+  <!-- ── Header ── -->
+  <div class="p-header">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="2" width="4" height="7.5" rx="2"/>
+        <path d="M3.5 7.8a4.5 4.5 0 0 0 9 0"/>
+        <line x1="8" y1="12.3" x2="8" y2="14"/>
+        <line x1="5.5" y1="14" x2="10.5" y2="14"/>
+      </svg>
+    </div>
+    <span class="header-title">AI Meeting Assistant</span>
+    <span class="status-pill" id="statusPill">Chưa hoạt động</span>
+  </div>
+
+  <!-- ── Tabs ── -->
   <div class="tabs">
-    <button class="tab-btn active" data-tab="control">▶ Control</button>
-    <button class="tab-btn" data-tab="settings">⚙ Settings</button>
+    <button class="tab-btn active" data-tab="control">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
+      Control
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+      Settings
+    </button>
   </div>
 
-  <!-- CONTROL TAB -->
+  <!-- ══════════════════════════════════════════
+       CONTROL TAB
+  ══════════════════════════════════════════ -->
   <div class="tab-panel active" id="tab-control">
-    <div id="provider-display" class="provider-info">Chưa cài API key. Vào Settings.</div>
-    <button class="btn btn-blue" id="startBtn">▶ Start AI Assistant</button>
-    <button class="btn btn-red"  id="stopBtn">■ Stop AI Assistant</button>
-    <div class="status" id="statusText">Status: Inactive</div>
-    <div class="err-msg" id="errorMsg"></div>
-  </div>
 
-  <!-- SETTINGS TAB -->
-  <div class="tab-panel" id="tab-settings">
-    <div class="section-title">🤖 AI Provider</div>
-    <label>Provider</label>
-    <select id="providerSelect">
-      <option value="gemini">Google Gemini</option>
-      <option value="openai">OpenAI</option>
-    </select>
-
-    <div id="gemini-settings">
-      <label>Gemini API Key</label>
-      <div class="row">
-        <input type="password" id="geminiKeyInput" placeholder="AIza..." />
-        <button class="btn-icon" id="toggleGeminiKey" title="Hiện/ẩn key">👁</button>
-        <button class="btn-green" id="saveGeminiBtn">Save</button>
+    <!-- ── INACTIVE VIEW ── -->
+    <div id="view-inactive" class="p-body">
+      <div id="provider-display" class="provider-info">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="4.5" width="12" height="8" rx="2"/>
+          <circle cx="6" cy="8.5" r=".8" fill="currentColor"/>
+          <circle cx="10" cy="8.5" r=".8" fill="currentColor"/>
+          <line x1="8" y1="2" x2="8" y2="4.5"/>
+        </svg>
+        <span>Chưa cài API key. Vào Settings.</span>
       </div>
-      <button class="btn-test" id="testGeminiBtn">🔍 Kiểm tra API Key</button>
-      <div class="msg" id="geminiKeyStatus"></div>
-      <div class="note">🔗 <b>aistudio.google.com</b><br>Model: Gemini Flash (tự động dùng bản mới nhất)</div>
+      <div class="err-msg" id="errorMsg"></div>
+      <button class="btn btn-blue" id="startBtn">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
+        Bắt đầu
+      </button>
     </div>
 
-    <div id="openai-settings" style="display:none;">
-      <label>OpenAI API Key</label>
-      <div class="row">
-        <input type="password" id="openaiKeyInput" placeholder="sk-..." />
-        <button class="btn-icon" id="toggleOpenaiKey" title="Hiện/ẩn key">👁</button>
-        <button class="btn-green" id="saveOpenaiBtn">Save</button>
+    <!-- ── ACTIVE VIEW ── -->
+    <div id="view-active" class="p-body" style="display:none">
+
+      <!-- Transcript -->
+      <div class="p-section">
+        <div class="section-header">
+          <span class="section-title">Transcript</span>
+          <span id="platformBadge" class="platform-badge" style="display:none"></span>
+          <span id="ccIcon" class="cc-icon" style="display:none"><span class="cc-label">CC</span></span>
+          <span class="spacer"></span>
+          <button class="icon-btn" id="reloadBtn" title="Khởi động lại nhận dạng">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 8a5 5 0 0 1 8.5-3.5L13 6"/><path d="M13 2.5V6H9.5"/>
+              <path d="M13 8a5 5 0 0 1-8.5 3.5L3 10"/><path d="M3 13.5V10h3.5"/>
+            </svg>
+            Reload
+          </button>
+        </div>
+        <div class="transcript-box" id="transcriptBox">
+          <span class="placeholder">Đang chờ người nói...</span>
+        </div>
+        <div class="footer-row">
+          <button class="icon-btn blue" id="copyTranscriptBtn" title="Copy transcript">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/>
+            </svg>
+            Copy
+          </button>
+          <button class="icon-btn blue" id="dlScriptBtn" title="Tải transcript">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
+            </svg>
+            Tải
+          </button>
+          <span class="spacer"></span>
+          <button class="icon-btn danger" id="clearTranscriptBtn" title="Xóa transcript hiển thị (giữ buffer)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12l5-5 5 5"/><path d="M6 15l-3-3 7-7a1.5 1.5 0 0 1 2 0l2 2a1.5 1.5 0 0 1 0 2l-4 4z"/>
+              <line x1="2" y1="15" x2="14" y2="15"/>
+            </svg>
+            Xóa
+          </button>
+          <button class="icon-btn danger" id="resetSavedBtn" title="Đặt lại toàn bộ dữ liệu">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="2.5" y1="4.5" x2="13.5" y2="4.5"/>
+              <path d="M4.5 4.5V13a1.5 1.5 0 0 0 1.5 1.5h4A1.5 1.5 0 0 0 11.5 13V4.5"/>
+              <path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/>
+              <line x1="7" y1="7" x2="7" y2="12"/><line x1="9" y1="7" x2="9" y2="12"/>
+            </svg>
+            Đặt lại
+          </button>
+        </div>
       </div>
-      <button class="btn-test" id="testOpenaiBtn">🔍 Kiểm tra API Key</button>
-      <div class="msg" id="openaiKeyStatus"></div>
-      <div class="note">🔗 <b>platform.openai.com</b><br>Model: gpt-4o-mini</div>
+
+      <hr class="p-divider">
+
+      <!-- Meeting Minutes -->
+      <div class="p-section">
+        <div class="section-header">
+          <span class="section-title purple">Meeting Minutes</span>
+          <span class="saved-indicator" id="savedCount"></span>
+          <span class="spacer"></span>
+          <button class="action-btn" id="gijirokuBtn">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
+            Generate
+          </button>
+        </div>
+        <div class="loading-bar" id="gijirokuBar"></div>
+        <div class="result-box" id="gijirokuBox">Nhấn "Generate" để tạo biên bản họp.</div>
+        <div class="footer-row">
+          <button class="icon-btn blue" id="copyGijirokuBtn" title="Copy meeting minutes">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/>
+            </svg>
+            Copy
+          </button>
+          <button class="icon-btn blue" id="dlGijirokuBtn" title="Download meeting minutes">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
+            </svg>
+            Tải
+          </button>
+          <span class="spacer"></span>
+          <button class="icon-btn danger" id="clearGijirokuBtn" title="Clear meeting minutes">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12l5-5 5 5"/><path d="M6 15l-3-3 7-7a1.5 1.5 0 0 1 2 0l2 2a1.5 1.5 0 0 1 0 2l-4 4z"/>
+              <line x1="2" y1="15" x2="14" y2="15"/>
+            </svg>
+            Xóa
+          </button>
+        </div>
+      </div>
+
+      <hr class="p-divider">
+
+      <!-- Footer: recording mode -->
+      <div id="footer-recording">
+        <button class="btn btn-red" id="stopBtn">
+          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1"/></svg>
+          Dừng
+        </button>
+      </div>
+
+      <!-- Footer: stopped/reviewing mode -->
+      <div id="footer-stopped" style="display:none">
+        <div class="stopped-actions">
+          <button class="btn btn-blue" id="resumeBtn">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
+            Tiếp tục
+          </button>
+          <button class="btn btn-outline" id="newSessionBtn">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+              <line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>
+            </svg>
+            Kết thúc
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /tab-control -->
+
+  <!-- ══════════════════════════════════════════
+       SETTINGS TAB
+  ══════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-settings">
+    <div class="settings-body">
+      <div class="section-title-settings">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 1.8v2.5M8 11.7v2.5M1.8 8h2.5M11.7 8h2.5"/>
+          <path d="M3.8 3.8l1.8 1.8M10.4 10.4l1.8 1.8M12.2 3.8l-1.8 1.8M5.6 10.4l-1.8 1.8"/>
+        </svg>
+        AI Provider
+      </div>
+
+      <label>Provider</label>
+      <select id="providerSelect">
+        <option value="gemini">Google Gemini</option>
+        <option value="openai">OpenAI</option>
+      </select>
+
+      <div id="gemini-settings">
+        <label>Gemini API Key</label>
+        <div class="row">
+          <input type="password" id="geminiKeyInput" placeholder="AIza...">
+          <button class="btn-icon" id="toggleGeminiKey" title="Hiện/ẩn key">
+            <svg class="ico ico-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1.5 8s2.3-5 6.5-5 6.5 5 6.5 5-2.3 5-6.5 5-6.5-5-6.5-5z"/>
+              <circle cx="8" cy="8" r="2.2"/>
+            </svg>
+          </button>
+          <button class="btn-green" id="saveGeminiBtn">Save</button>
+        </div>
+        <button class="btn-test" id="testGeminiBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 1.5L2.5 3.5v4c0 3.3 2.2 6 5.5 6.5 3.3-.5 5.5-3.2 5.5-6.5v-4L8 1.5z"/>
+            <path d="M6 8l1.4 1.4L10.4 6.4"/>
+          </svg>
+          Kiểm tra API Key
+        </button>
+        <div class="msg" id="geminiKeyStatus"></div>
+        <div class="note">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6.5 9.5L9.5 6.5"/><path d="M9 5l.7-.7a2.5 2.5 0 0 1 3.5 3.5L12 9"/>
+            <path d="M7 11l-.7.7a2.5 2.5 0 0 1-3.5-3.5L4 7"/>
+          </svg>
+          <span><b>aistudio.google.com</b><br>Model: Gemini Flash (tự động dùng bản mới nhất)</span>
+        </div>
+      </div>
+
+      <div id="openai-settings" style="display:none">
+        <label>OpenAI API Key</label>
+        <div class="row">
+          <input type="password" id="openaiKeyInput" placeholder="sk-...">
+          <button class="btn-icon" id="toggleOpenaiKey" title="Hiện/ẩn key">
+            <svg class="ico ico-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1.5 8s2.3-5 6.5-5 6.5 5 6.5 5-2.3 5-6.5 5-6.5-5-6.5-5z"/>
+              <circle cx="8" cy="8" r="2.2"/>
+            </svg>
+          </button>
+          <button class="btn-green" id="saveOpenaiBtn">Save</button>
+        </div>
+        <button class="btn-test" id="testOpenaiBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 1.5L2.5 3.5v4c0 3.3 2.2 6 5.5 6.5 3.3-.5 5.5-3.2 5.5-6.5v-4L8 1.5z"/>
+            <path d="M6 8l1.4 1.4L10.4 6.4"/>
+          </svg>
+          Kiểm tra API Key
+        </button>
+        <div class="msg" id="openaiKeyStatus"></div>
+        <div class="note">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6.5 9.5L9.5 6.5"/><path d="M9 5l.7-.7a2.5 2.5 0 0 1 3.5 3.5L12 9"/>
+            <path d="M7 11l-.7.7a2.5 2.5 0 0 1-3.5-3.5L4 7"/>
+          </svg>
+          <span><b>platform.openai.com</b><br>Model: gpt-4o-mini</span>
+        </div>
+      </div>
+    </div>
+  </div><!-- /tab-settings -->
+
+  <!-- ── Custom confirm dialog ── -->
+  <div id="confirmDialog" class="confirm-overlay" style="display:none">
+    <div class="confirm-box">
+      <p id="confirmMsg"></p>
+      <div class="confirm-actions">
+        <button class="btn-c-cancel" id="confirmCancelBtn">Hủy</button>
+        <button class="btn-c-ok"     id="confirmOkBtn">Xác nhận</button>
+      </div>
     </div>
   </div>
 

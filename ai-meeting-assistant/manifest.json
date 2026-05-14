@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Meeting Assistant",
-  "version": "1.0",
+  "version": "2.0",
   "description": "Real-time Japanese meeting assistant with speaker diarization and standby capture.",
   "permissions": [
     "activeTab",
@@ -13,11 +13,33 @@
     "https://teams.microsoft.com/*",
     "https://teams.live.com/*"
   ],
+  "icons": {
+    "16":  "icons/icon-16.png",
+    "32":  "icons/icon-32.png",
+    "48":  "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16":  "icons/icon-16.png",
+      "32":  "icons/icon-32.png",
+      "48":  "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "commands": {
+    "toggle-assistant": {
+      "suggested_key": { "default": "Alt+Shift+M" },
+      "description": "Bật/tắt AI Meeting Assistant"
+    },
+    "toggle-minimize": {
+      "suggested_key": { "default": "Alt+Shift+H" },
+      "description": "Thu nhỏ / khôi phục overlay"
+    }
   },
   "content_scripts": [
     {
