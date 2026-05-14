@@ -702,6 +702,12 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     saveToLiveStorage();
     sendResponse({ ok: true });
   } else if (req.action === 'reset_saved') {
+    // Full session teardown — disconnect observer so it doesn't keep firing
+    if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+    clearTimeout(commitTimer);
+    if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
+    clearInterval(speechWatchdog); speechWatchdog = null;
+    captureActive = false; captionMode = null; overlayActive = false; isRecognizing = false;
     savedTranscript = '';
     savedSpeakers.clear();
     fullSegments = []; fullTranscript = ''; interimSegment = null;
@@ -709,6 +715,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     const key = STORAGE_PREFIX + meetingKey(location.href);
     try { chrome.storage.local.remove([key]); } catch(_) {}
     saveToLiveStorage();
+    setBadge('', '');
     sendResponse({ ok: true });
   } else if (req.action === 'reload_capture') {
     const micModes = ['webspeech','meet-mic','teams-mic'];

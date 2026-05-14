@@ -343,6 +343,10 @@ function showInactiveView() {
   document.getElementById('recTimer').style.display = 'none';
   timerReset();
 
+  // Always clear error messages when returning to home screen
+  const errEl = document.getElementById('errorMsg');
+  if (errEl) errEl.textContent = '';
+
   isSessionActive  = false;
   isSessionStopped = false;
 }
@@ -546,24 +550,25 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // ── sendToTab helper ──────────────────────────────────────────────
-function sendToTab(message, onSuccess, onError) {
+// silent:true suppresses error display — use for cleanup/best-effort actions
+function sendToTab(message, onSuccess, onError, opts = {}) {
   const errEl = document.getElementById('errorMsg');
   if (errEl) errEl.textContent = '';
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     if (!tabs?.length) {
-      if (errEl) errEl.textContent = 'Không tìm thấy tab.';
+      if (!opts.silent && errEl) errEl.textContent = 'Không tìm thấy tab.';
       if (onError) onError();
       return;
     }
     const tab = tabs[0];
     if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
-      if (errEl) errEl.textContent = 'Không thể chạy trên trang này.';
+      if (!opts.silent && errEl) errEl.textContent = 'Không thể chạy trên trang này.';
       if (onError) onError();
       return;
     }
     chrome.tabs.sendMessage(tab.id, message, res => {
       if (chrome.runtime.lastError) {
-        if (errEl) errEl.textContent = 'Không thể kết nối. Thử reload trang.';
+        if (!opts.silent && errEl) errEl.textContent = 'Không thể kết nối. Thử reload trang.';
         if (onError) onError();
         return;
       }
@@ -633,6 +638,7 @@ document.getElementById('newSessionBtn').addEventListener('click', () => {
     if (currentGijirokuKey) chrome.storage.local.remove([currentGijirokuKey]);
 
     const doReset = () => {
+      // silent: cleanup op — if content script unreachable, fall back to local clear
       sendToTab({ action: 'reset_saved' }, () => {
         timerReset();
         showInactiveView();
@@ -640,7 +646,7 @@ document.getElementById('newSessionBtn').addEventListener('click', () => {
         if (currentLiveKey) chrome.storage.local.remove([currentLiveKey]);
         timerReset();
         showInactiveView();
-      });
+      }, { silent: true });
     };
 
     // Nếu đang ghi thì stop trước, sau đó reset
