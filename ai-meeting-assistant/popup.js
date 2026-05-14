@@ -1,4 +1,4 @@
-// popup.js v6.0.0
+// popup.js v7.0.0
 
 // ── SVG icon strings (reused in dynamic content) ─────────────────
 const ICO = {
@@ -40,11 +40,12 @@ const ICO = {
     '<line x1="8" y1="12.3" x2="8" y2="14"/><line x1="5.5" y1="14" x2="10.5" y2="14"/></svg>',
 };
 
-const SPEAKER_COLORS = ['a','b','c','d','e','f'];
-const LIVE_PREFIX     = 'mt_live:';
-const BUF_PREFIX      = 'mt_buf:';
-const GIJIROKU_PREFIX = 'mt_giji:';
-const GIJIROKU_TTL_MS = 2 * 60 * 60 * 1000; // 2 giờ
+const SPEAKER_COLORS   = ['a','b','c','d','e','f'];
+const LIVE_PREFIX      = 'mt_live:';
+const BUF_PREFIX       = 'mt_buf:';
+const GIJIROKU_PREFIX  = 'mt_giji:';
+const TIMER_PREFIX     = 'mt_timer:';
+const GIJIROKU_TTL_MS  = 2 * 60 * 60 * 1000;
 
 // ── Helpers ──────────────────────────────────────────────────────
 function meetingKeyFromUrl(url) {
@@ -76,12 +77,12 @@ function setStatus(id, msg, cls) {
   el.appendChild(txt);
 }
 
-// ── Custom confirm dialog (replaces native confirm() which overlaps the popup) ──
+// ── Custom confirm dialog ─────────────────────────────────────────
 function showConfirm(message, onOk) {
-  const overlay    = document.getElementById('confirmDialog');
-  const msgEl      = document.getElementById('confirmMsg');
-  const okBtn      = document.getElementById('confirmOkBtn');
-  const cancelBtn  = document.getElementById('confirmCancelBtn');
+  const overlay   = document.getElementById('confirmDialog');
+  const msgEl     = document.getElementById('confirmMsg');
+  const okBtn     = document.getElementById('confirmOkBtn');
+  const cancelBtn = document.getElementById('confirmCancelBtn');
   msgEl.textContent = message;
   overlay.style.display = 'flex';
 
@@ -91,9 +92,9 @@ function showConfirm(message, onOk) {
     cancelBtn.removeEventListener('click', handleCancel);
     overlay.removeEventListener('click', handleOverlay);
   }
-  function handleOk()      { close(); onOk(); }
-  function handleCancel()  { close(); }
-  function handleOverlay(e){ if (e.target === overlay) close(); }
+  function handleOk()       { close(); onOk(); }
+  function handleCancel()   { close(); }
+  function handleOverlay(e) { if (e.target === overlay) close(); }
 
   okBtn.addEventListener('click', handleOk);
   cancelBtn.addEventListener('click', handleCancel);
@@ -116,7 +117,7 @@ const providerSelect = document.getElementById('providerSelect');
 function updateProviderUI(provider) {
   document.getElementById('gemini-settings').style.display = provider === 'gemini' ? 'block' : 'none';
   document.getElementById('openai-settings').style.display = provider === 'openai'  ? 'block' : 'none';
-  const d = document.getElementById('provider-display');
+  const d    = document.getElementById('provider-display');
   const span = d?.querySelector('span');
   if (span) {
     span.innerHTML = provider === 'gemini'
@@ -183,10 +184,10 @@ function bindTestKey(btnId, statusId) {
   document.getElementById(btnId).addEventListener('click', () => {
     const btn = document.getElementById(btnId);
     btn.innerHTML = ICO.spinner + ' Đang kiểm tra...';
-    btn.disabled = true;
+    btn.disabled  = true;
     chrome.runtime.sendMessage({ action: 'test_api_key' }, res => {
       btn.innerHTML = origHTML;
-      btn.disabled = false;
+      btn.disabled  = false;
       let modelText = '';
       if (res?.modelInfo) {
         const info = res.modelInfo;
@@ -202,63 +203,168 @@ bindTestKey('testGeminiBtn', 'geminiKeyStatus');
 bindTestKey('testOpenaiBtn', 'openaiKeyStatus');
 
 // ═════════════════════════════════════════════════════════════════
-// CONTROL TAB — Active/Inactive view logic
+// CONTROL TAB — state
 // ═════════════════════════════════════════════════════════════════
 
 let currentTabUrl      = null;
 let currentLiveKey     = null;
 let currentBufKey      = null;
 let currentGijirokuKey = null;
+let timerKey           = null;
 let isSessionActive    = false;
 let isSessionStopped   = false;
-let gijirokuText       = '';
-let isGijirokuRunning  = false;
+let minutesText        = '';
+let isMinutesRunning   = false;
+
+// ── Recording timer ───────────────────────────────────────────────
+let recTimerInterval = null;
+
+function fmtMs(ms) {
+  const secs = Math.floor(ms / 1000);
+  return String(Math.floor(secs / 60)).padStart(2,'0') + ':' + String(secs % 60).padStart(2,'0');
+}
+
+function updateTimerDisplay(ms) {
+  const el = document.getElementById('recTimer');
+  if (el) el.textContent = fmtMs(ms);
+}
+
+function tickTimer() {
+  if (!timerKey) return;
+  chrome.storage.local.get([timerKey], r => {
+    const d  = r[timerKey];
+    const ms = d ? (d.elapsed || 0) + (d.startTime ? Date.now() - d.startTime : 0) : 0;
+    updateTimerDisplay(ms);
+  });
+}
+
+function startTimerTick() {
+  clearInterval(recTimerInterval);
+  tickTimer();
+  recTimerInterval = setInterval(tickTimer, 1000);
+}
+
+function stopTimerTick() {
+  clearInterval(recTimerInterval);
+  tickTimer();
+}
+
+// Fresh start: clears previous timer data and begins from 0
+function timerStartFresh() {
+  if (!timerKey) return;
+  chrome.storage.local.set({ [timerKey]: { elapsed: 0, startTime: Date.now() } });
+  startTimerTick();
+}
+
+// Resume: keeps accumulated elapsed, sets new startTime
+function timerResume() {
+  if (!timerKey) return;
+  chrome.storage.local.get([timerKey], r => {
+    const prev = r[timerKey] || { elapsed: 0 };
+    chrome.storage.local.set({ [timerKey]: { elapsed: prev.elapsed || 0, startTime: Date.now() } });
+    startTimerTick();
+  });
+}
+
+// Pause: accumulates elapsed, freezes startTime
+function timerPause() {
+  if (!timerKey) return;
+  chrome.storage.local.get([timerKey], r => {
+    const d = r[timerKey];
+    if (!d) return;
+    const elapsed = (d.elapsed || 0) + (d.startTime ? Date.now() - d.startTime : 0);
+    chrome.storage.local.set({ [timerKey]: { elapsed, startTime: 0 } });
+    stopTimerTick();
+  });
+}
+
+// Reset: wipes timer for new session
+function timerReset() {
+  clearInterval(recTimerInterval);
+  if (timerKey) chrome.storage.local.remove([timerKey]);
+  updateTimerDisplay(0);
+}
+
+// Called when popup opens and session is already active
+function timerRestoreAndTick() {
+  startTimerTick();
+}
 
 // ── View switching ────────────────────────────────────────────────
 function showActiveView() {
-  document.getElementById('view-inactive').style.display    = 'none';
-  document.getElementById('view-active').style.display      = 'block';
-  document.getElementById('footer-recording').style.display = 'block';
-  document.getElementById('footer-stopped').style.display   = 'none';
+  document.getElementById('view-inactive').style.display = 'none';
+  document.getElementById('view-active').style.display   = 'block';
+  document.getElementById('view-minutes').style.display  = 'none';
+
+  document.getElementById('stopBtn').style.display   = '';
+  document.getElementById('resumeBtn').style.display = 'none';
+
   const pill = document.getElementById('statusPill');
   pill.className = 'status-pill active';
   pill.innerHTML = '<span class="s-dot"></span> Đang ghi';
+
+  const timer = document.getElementById('recTimer');
+  timer.style.display = '';
+  timer.classList.remove('frozen');
+
   isSessionActive  = true;
   isSessionStopped = false;
 }
 
 function showStoppedView() {
-  document.getElementById('view-inactive').style.display    = 'none';
-  document.getElementById('view-active').style.display      = 'block';
-  document.getElementById('footer-recording').style.display = 'none';
-  document.getElementById('footer-stopped').style.display   = 'block';
+  document.getElementById('view-inactive').style.display = 'none';
+  document.getElementById('view-active').style.display   = 'block';
+  document.getElementById('view-minutes').style.display  = 'none';
+
+  document.getElementById('stopBtn').style.display   = 'none';
+  document.getElementById('resumeBtn').style.display = '';
+
   const pill = document.getElementById('statusPill');
   pill.className = 'status-pill stopped';
-  pill.innerHTML = '<svg width="6" height="6" viewBox="0 0 6 6" fill="currentColor"><rect width="6" height="6" rx="1"/></svg> Đã dừng';
+  pill.innerHTML = '<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><rect width="8" height="8" rx="1.5"/></svg> Tạm dừng';
+
+  const timer = document.getElementById('recTimer');
+  timer.style.display = '';
+  timer.classList.add('frozen');
+
   isSessionActive  = false;
   isSessionStopped = true;
 }
 
 function showInactiveView() {
-  document.getElementById('view-inactive').style.display    = 'block';
-  document.getElementById('view-active').style.display      = 'none';
-  document.getElementById('footer-recording').style.display = 'block';
-  document.getElementById('footer-stopped').style.display   = 'none';
+  document.getElementById('view-inactive').style.display = 'block';
+  document.getElementById('view-active').style.display   = 'none';
+  document.getElementById('view-minutes').style.display  = 'none';
+
   const pill = document.getElementById('statusPill');
   pill.className = 'status-pill';
   pill.innerHTML = 'Chưa hoạt động';
+
+  document.getElementById('recTimer').style.display = 'none';
+  timerReset();
+
   isSessionActive  = false;
   isSessionStopped = false;
 }
 
-// ── Render transcript from live storage data ──────────────────────
+function showMinutesView() {
+  document.getElementById('view-active').style.display  = 'none';
+  document.getElementById('view-minutes').style.display = 'block';
+}
+
+function hideMinutesView() {
+  document.getElementById('view-minutes').style.display = 'none';
+  document.getElementById('view-active').style.display  = 'block';
+}
+
+// ── Render transcript ─────────────────────────────────────────────
 function renderTranscript(data) {
   const box = document.getElementById('transcriptBox');
   if (!box) return;
 
-  const segments  = data?.segments      || [];
-  const interim   = data?.interim       || null;
-  const sMap      = data?.speakerMap    || {};
+  const segments = data?.segments   || [];
+  const interim  = data?.interim    || null;
+  const sMap     = data?.speakerMap || {};
 
   if (!segments.length && !interim) {
     box.innerHTML = '<span class="placeholder">Đang chờ người nói...</span>';
@@ -267,7 +373,6 @@ function renderTranscript(data) {
 
   const frag = document.createDocumentFragment();
 
-  // Group consecutive same-speaker segments
   const grouped = [];
   segments.forEach(seg => {
     const last = grouped[grouped.length - 1];
@@ -276,7 +381,7 @@ function renderTranscript(data) {
   });
 
   grouped.forEach(seg => {
-    const row   = document.createElement('div');
+    const row  = document.createElement('div');
     row.className = 'speaker-line';
     const badge = document.createElement('span');
     badge.className = `spk-badge ai-speaker-${colorFor(seg.speaker, sMap)}`;
@@ -290,7 +395,7 @@ function renderTranscript(data) {
   });
 
   if (interim) {
-    const row   = document.createElement('div');
+    const row  = document.createElement('div');
     row.className = 'speaker-line';
     const badge = document.createElement('span');
     badge.className = `spk-badge ai-speaker-${colorFor(interim.speaker, sMap)} spk-interim`;
@@ -326,8 +431,8 @@ function renderPlatformInfo(captionMode) {
   if (!info) { badge.style.display = 'none'; ccIcon.style.display = 'none'; return; }
 
   badge.style.display = 'inline-flex';
-  badge.className = 'platform-badge ' + info.cls;
-  badge.innerHTML = info.ico + ' ' + info.text;
+  badge.className     = 'platform-badge ' + info.cls;
+  badge.innerHTML     = info.ico + ' ' + info.text;
 
   if (info.cc === null) {
     ccIcon.style.display = 'none';
@@ -345,50 +450,41 @@ function renderPlatformInfo(captionMode) {
   }
 }
 
-// ── Saved count ───────────────────────────────────────────────────
-function renderSavedCount(lines) {
-  const el = document.getElementById('savedCount');
-  if (!el) return;
-  if (lines > 0) el.innerHTML = ICO.stack + ' ' + lines + ' dòng đã lưu';
-  else           el.textContent = '';
-}
-
 // ── Apply live data to UI ─────────────────────────────────────────
 function applyLiveData(data) {
   if (!data) return;
   renderTranscript(data);
   renderPlatformInfo(data.captionMode);
-  renderSavedCount(data.savedLines || 0);
 }
 
-// ── Restore gijiroku from storage into UI ─────────────────────────
-function restoreGijirokuFromStorage() {
+// ── Restore minutes from storage ──────────────────────────────────
+function restoreMinutesFromStorage() {
   if (!currentGijirokuKey) return;
   chrome.storage.local.get([currentGijirokuKey], r => {
     const entry = r?.[currentGijirokuKey];
     if (!entry) return;
-    // Support both old plain-string format and new { text, savedAt } format
     const text    = typeof entry === 'string' ? entry : entry.text;
     const savedAt = typeof entry === 'string' ? 0      : (entry.savedAt || 0);
     if (!text) return;
-    // Expire after 24 hours
     if (savedAt && Date.now() - savedAt > GIJIROKU_TTL_MS) {
       chrome.storage.local.remove([currentGijirokuKey]);
       return;
     }
-    gijirokuText = text;
-    document.getElementById('gijirokuBox').textContent = text;
+    minutesText = text;
+    const box = document.getElementById('minutesBox');
+    if (box) box.textContent = text;
+    const badge = document.getElementById('minutesSavedBadge');
+    if (badge) badge.style.display = 'inline-flex';
   });
 }
 
-// ── Load state when popup opens ───────────────────────────────────
+// ── Load state on popup open ──────────────────────────────────────
 function loadState() {
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     if (!tabs?.length) return;
     const tab = tabs[0];
     currentTabUrl = tab.url || '';
 
-    // Guard: non-extension pages only
     if (!currentTabUrl || currentTabUrl.startsWith('chrome://') || currentTabUrl.startsWith('chrome-extension://')) {
       showInactiveView();
       document.getElementById('errorMsg').textContent = 'Mở Google Meet hoặc Teams để bắt đầu.';
@@ -399,24 +495,27 @@ function loadState() {
     currentLiveKey     = LIVE_PREFIX     + mk;
     currentBufKey      = BUF_PREFIX      + mk;
     currentGijirokuKey = GIJIROKU_PREFIX + mk;
+    timerKey           = TIMER_PREFIX    + mk;
 
     chrome.storage.local.get([currentLiveKey], r => {
       const data = r?.[currentLiveKey];
       if (data?.active) {
         showActiveView();
+        timerRestoreAndTick();
         applyLiveData(data);
-        restoreGijirokuFromStorage();
+        restoreMinutesFromStorage();
       } else {
         chrome.tabs.sendMessage(tab.id, { action: 'get_status' }, res => {
           void chrome.runtime.lastError;
           if (res?.active) {
             showActiveView();
+            timerRestoreAndTick();
             if (data) applyLiveData(data);
-            restoreGijirokuFromStorage();
+            restoreMinutesFromStorage();
           } else if (data?.savedLines > 0) {
             showStoppedView();
             applyLiveData(data);
-            restoreGijirokuFromStorage();
+            restoreMinutesFromStorage();
           } else {
             showInactiveView();
           }
@@ -426,7 +525,7 @@ function loadState() {
   });
 }
 
-// ── Storage change listener (live transcript updates) ─────────────
+// ── Storage change listener ───────────────────────────────────────
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !currentLiveKey) return;
   const change = changes[currentLiveKey];
@@ -436,14 +535,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
   if (data.active && !isSessionActive) {
     showActiveView();
+    timerRestoreAndTick();
   } else if (!data.active && isSessionActive) {
     showStoppedView();
+    timerPause();
     return;
   }
 
-  if (isSessionActive) {
-    applyLiveData(data);
-  }
+  if (isSessionActive) applyLiveData(data);
 });
 
 // ── sendToTab helper ──────────────────────────────────────────────
@@ -473,7 +572,7 @@ function sendToTab(message, onSuccess, onError) {
   });
 }
 
-// ── Start button ──────────────────────────────────────────────────
+// ── Start ─────────────────────────────────────────────────────────
 document.getElementById('startBtn').addEventListener('click', () => {
   chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey'], r => {
     const provider = r.aiProvider || 'gemini';
@@ -484,20 +583,23 @@ document.getElementById('startBtn').addEventListener('click', () => {
     }
     sendToTab({ action: 'start' }, () => {
       showActiveView();
+      timerStartFresh();
     });
   });
 });
 
-// ── Stop button ───────────────────────────────────────────────────
+// ── Tạm dừng ─────────────────────────────────────────────────────
 document.getElementById('stopBtn').addEventListener('click', () => {
   sendToTab({ action: 'stop' }, () => {
     showStoppedView();
+    timerPause();
   }, () => {
     showStoppedView();
+    timerPause();
   });
 });
 
-// ── Resume button ─────────────────────────────────────────────────
+// ── Tiếp tục ─────────────────────────────────────────────────────
 document.getElementById('resumeBtn').addEventListener('click', () => {
   chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey'], r => {
     const provider = r.aiProvider || 'gemini';
@@ -508,24 +610,45 @@ document.getElementById('resumeBtn').addEventListener('click', () => {
     }
     sendToTab({ action: 'start' }, () => {
       showActiveView();
+      timerResume();
     });
   });
 });
 
-// ── End button ────────────────────────────────────────────────────
+// ── Kết thúc ─────────────────────────────────────────────────────
 document.getElementById('newSessionBtn').addEventListener('click', () => {
   showConfirm('Kết thúc phiên này?\nToàn bộ transcript và biên bản họp sẽ bị xóa.', () => {
+    const wasRecording = isSessionActive;
+
+    // Reset flags trước để storage listener không gọi showStoppedView() đè lên
+    isSessionActive  = false;
+    isSessionStopped = false;
+
     document.getElementById('transcriptBox').innerHTML = '<span class="placeholder">Đang chờ người nói...</span>';
-    document.getElementById('gijirokuBox').textContent  = 'Nhấn "Generate" để tạo biên bản họp.';
-    gijirokuText = '';
+    const mBox = document.getElementById('minutesBox');
+    if (mBox) mBox.textContent = '';
+    const badge = document.getElementById('minutesSavedBadge');
+    if (badge) badge.style.display = 'none';
+    minutesText = '';
     if (currentGijirokuKey) chrome.storage.local.remove([currentGijirokuKey]);
-    renderSavedCount(0);
-    sendToTab({ action: 'reset_saved' }, () => {
-      showInactiveView();
-    }, () => {
-      if (currentLiveKey) chrome.storage.local.remove([currentLiveKey]);
-      showInactiveView();
-    });
+
+    const doReset = () => {
+      sendToTab({ action: 'reset_saved' }, () => {
+        timerReset();
+        showInactiveView();
+      }, () => {
+        if (currentLiveKey) chrome.storage.local.remove([currentLiveKey]);
+        timerReset();
+        showInactiveView();
+      });
+    };
+
+    // Nếu đang ghi thì stop trước, sau đó reset
+    if (wasRecording) {
+      sendToTab({ action: 'stop' }, doReset, doReset);
+    } else {
+      doReset();
+    }
   });
 });
 
@@ -538,33 +661,20 @@ document.getElementById('reloadBtn').addEventListener('click', () => {
   }, () => { btn.disabled = false; });
 });
 
-// ── Clear transcript (keep savedTranscript buffer) ────────────────
+// ── Clear transcript ──────────────────────────────────────────────
 document.getElementById('clearTranscriptBtn').addEventListener('click', () => {
   showConfirm('Xóa transcript hiện tại?\n(Dữ liệu biên bản họp đã tích lũy vẫn được giữ lại)', () => {
     sendToTab({ action: 'clear_transcript' });
     document.getElementById('transcriptBox').innerHTML = '<span class="placeholder">Đã xóa. Đang chờ người nói...</span>';
-    renderSavedCount(0);
   });
 });
 
-// ── Reset all saved data ──────────────────────────────────────────
-document.getElementById('resetSavedBtn').addEventListener('click', () => {
-  showConfirm('Đặt lại toàn bộ dữ liệu?\nBiên bản họp và transcript đã lưu sẽ bị xóa hết.', () => {
-    sendToTab({ action: 'reset_saved' });
-    document.getElementById('transcriptBox').innerHTML = '<span class="placeholder">Đã reset. Đang chờ người nói...</span>';
-    document.getElementById('gijirokuBox').textContent = 'Nhấn "Generate" để tạo biên bản họp.';
-    gijirokuText = '';
-    if (currentGijirokuKey) chrome.storage.local.remove([currentGijirokuKey]);
-    renderSavedCount(0);
-  });
-});
 
 // ── Copy transcript ───────────────────────────────────────────────
 document.getElementById('copyTranscriptBtn').addEventListener('click', () => {
   if (!currentLiveKey) return;
   chrome.storage.local.get([currentLiveKey], r => {
-    const data = r?.[currentLiveKey];
-    const text = data?.savedTranscript?.trim() || '';
+    const text = r?.[currentLiveKey]?.savedTranscript?.trim() || '';
     if (!text) return;
     navigator.clipboard.writeText(text).then(() => flashBtn('copyTranscriptBtn', 'Đã copy'));
   });
@@ -593,76 +703,286 @@ document.getElementById('dlScriptBtn').addEventListener('click', () => {
   });
 });
 
-// ── 議事録: Create ────────────────────────────────────────────────
-document.getElementById('gijirokuBtn').addEventListener('click', () => {
-  if (isGijirokuRunning) return;
-  if (!currentLiveKey) return;
+// ─────────────────────────────────────────────────────────────────
+// MEETING MINUTES
+// ─────────────────────────────────────────────────────────────────
+
+// ── Open Minutes panel ────────────────────────────────────────────
+document.getElementById('minutesBtn').addEventListener('click', () => {
+  showMinutesView();
+
+  // If minutes already exist, show them
+  if (minutesText) {
+    document.getElementById('minutesBox').textContent = minutesText;
+    document.getElementById('minutesSavedBadge').style.display = 'inline-flex';
+    return;
+  }
+
+  // Otherwise auto-generate
+  triggerGenerateMinutes();
+});
+
+// ── Back button ───────────────────────────────────────────────────
+document.getElementById('minutesBackBtn').addEventListener('click', () => {
+  hideMinutesView();
+});
+
+// ── Generate minutes (internal) ───────────────────────────────────
+function triggerGenerateMinutes() {
+  if (isMinutesRunning || !currentLiveKey) return;
 
   chrome.storage.local.get([currentLiveKey], r => {
     const data = r?.[currentLiveKey];
     const text = data?.savedTranscript?.trim() || '';
     if (!text) {
-      alert('Chưa có transcript. Hãy tiến hành cuộc họp trước.');
+      const box = document.getElementById('minutesBox');
+      box.textContent = 'Chưa có transcript. Hãy tiến hành cuộc họp trước.';
+      box.classList.remove('loading');
       return;
     }
 
-    isGijirokuRunning = true;
-    const btn = document.getElementById('gijirokuBtn');
-    const box = document.getElementById('gijirokuBox');
-    const bar = document.getElementById('gijirokuBar');
+    isMinutesRunning = true;
+    const box = document.getElementById('minutesBox');
+    const bar = document.getElementById('minutesLoadingBar');
+    const btn = document.getElementById('minutesBtn');
 
-    btn.innerHTML = ICO.spinner + ' Đang tạo...';
-    btn.disabled  = true;
     box.textContent = 'Đang tạo biên bản họp...';
     box.classList.add('loading');
     bar.classList.add('active');
+    if (btn) btn.disabled = true;
+
+    document.getElementById('minutesSavedBadge').style.display = 'none';
 
     const meta = { speakers: data?.savedSpeakers || [] };
     chrome.runtime.sendMessage({ action: 'ai_request', text, mode: 'gijiroku', meta }, res => {
-      isGijirokuRunning = false;
-      btn.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path d="M5 3.5v9l7-4.5z"/></svg> Generate';
-      btn.disabled  = false;
+      isMinutesRunning = false;
       box.classList.remove('loading');
       bar.classList.remove('active');
+      if (btn) btn.disabled = false;
 
-      if (chrome.runtime.lastError) {
-        box.textContent = '-';
-        return;
-      }
+      if (chrome.runtime.lastError) { box.textContent = 'Lỗi kết nối.'; return; }
+
       if (res?.success) {
-        gijirokuText = res.data?.gijiroku || '(Không có kết quả)';
-        box.textContent = gijirokuText;
-        if (currentGijirokuKey) chrome.storage.local.set({ [currentGijirokuKey]: { text: gijirokuText, savedAt: Date.now() } });
-        renderSavedCount((data?.savedLines || 0));
+        minutesText = res.data?.gijiroku || '(Không có kết quả)';
+        box.textContent = minutesText;
+        document.getElementById('minutesSavedBadge').style.display = 'inline-flex';
+        if (currentGijirokuKey) {
+          chrome.storage.local.set({ [currentGijirokuKey]: { text: minutesText, savedAt: Date.now() } });
+        }
       } else {
         box.textContent = res?.error || 'Lỗi không xác định.';
       }
     });
   });
+}
+
+// ── Copy minutes ──────────────────────────────────────────────────
+document.getElementById('copyMinutesBtn').addEventListener('click', () => {
+  const text = document.getElementById('minutesBox')?.textContent?.trim();
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => flashBtn('copyMinutesBtn', 'Đã copy'));
 });
 
-// ── 議事録: Copy ──────────────────────────────────────────────────
-document.getElementById('copyGijirokuBtn').addEventListener('click', () => {
-  const text = document.getElementById('gijirokuBox')?.textContent?.trim();
-  if (!text || text === 'Nhấn "Generate" để tạo biên bản họp.') return;
-  navigator.clipboard.writeText(text).then(() => flashBtn('copyGijirokuBtn', 'Đã copy'));
-});
-
-// ── 議事録: Download ──────────────────────────────────────────────
-document.getElementById('dlGijirokuBtn').addEventListener('click', () => {
-  const text = document.getElementById('gijirokuBox')?.textContent?.trim();
-  if (!text || text === 'Nhấn "Generate" để tạo biên bản họp.') return;
+// ── Download .txt ─────────────────────────────────────────────────
+document.getElementById('dlTxtBtn').addEventListener('click', () => {
+  const text = document.getElementById('minutesBox')?.textContent?.trim();
+  if (!text) return;
   const now   = new Date();
-  const fname = `MeetingMinutes_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}.txt`;
+  const fname = `MeetingMinutes_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.txt`;
   downloadText(text, fname);
 });
 
-// ── 議事録: Clear ─────────────────────────────────────────────────
-document.getElementById('clearGijirokuBtn').addEventListener('click', () => {
-  document.getElementById('gijirokuBox').textContent = 'Nhấn "Generate" để tạo biên bản họp.';
-  gijirokuText = '';
-  if (currentGijirokuKey) chrome.storage.local.remove([currentGijirokuKey]);
+// ── Download .docx ────────────────────────────────────────────────
+document.getElementById('dlDocxBtn').addEventListener('click', () => {
+  const text = document.getElementById('minutesBox')?.textContent?.trim();
+  if (!text) return;
+  const now   = new Date();
+  const fname = `MeetingMinutes_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.docx`;
+  const blob  = buildDocxBlob(text);
+  const url   = URL.createObjectURL(blob);
+  const a     = document.createElement('a');
+  a.href = url; a.download = fname; a.click();
+  URL.revokeObjectURL(url);
 });
+
+// ── Clear minutes ─────────────────────────────────────────────────
+document.getElementById('clearMinutesBtn').addEventListener('click', () => {
+  document.getElementById('minutesBox').textContent = '';
+  document.getElementById('minutesSavedBadge').style.display = 'none';
+  minutesText = '';
+  if (currentGijirokuKey) chrome.storage.local.remove([currentGijirokuKey]);
+  hideMinutesView();
+});
+
+// ─────────────────────────────────────────────────────────────────
+// DOCX GENERATOR (minimal ZIP + OOXML, no external deps)
+// ─────────────────────────────────────────────────────────────────
+
+function escXml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function buildDocxBlob(text) {
+  // Strip control chars invalid in XML 1.0
+  const safe  = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+
+  const paras = safe.split('\n').map(line => {
+    if (!line.trim()) return '<w:p/>';
+    return '<w:p>' +
+      '<w:r><w:rPr><w:rFonts w:eastAsia="Meiryo" w:cs="Meiryo"/></w:rPr>' +
+      '<w:t xml:space="preserve">' + escXml(line) + '</w:t></w:r>' +
+      '</w:p>';
+  }).join('');
+
+  const docXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:document' +
+    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' +
+    ' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"' +
+    ' xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"' +
+    ' xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"' +
+    ' mc:Ignorable="w14">' +
+    '<w:body>' + paras +
+    '<w:sectPr>' +
+    '<w:pgSz w:w="11906" w:h="16838"/>' +
+    '<w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/>' +
+    '</w:sectPr></w:body></w:document>';
+
+  const settingsXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:defaultTabStop w:val="720"/></w:settings>';
+
+  const contentTypes =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/word/document.xml"' +
+    ' ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+    '<Override PartName="/word/settings.xml"' +
+    ' ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>' +
+    '</Types>';
+
+  const pkgRels =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1"' +
+    ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"' +
+    ' Target="word/document.xml"/></Relationships>';
+
+  const docRels =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1"' +
+    ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"' +
+    ' Target="settings.xml"/></Relationships>';
+
+  return zipToBlob([
+    { name: '[Content_Types].xml',          text: contentTypes },
+    { name: '_rels/.rels',                  text: pkgRels      },
+    { name: 'word/document.xml',            text: docXml       },
+    { name: 'word/settings.xml',            text: settingsXml  },
+    { name: 'word/_rels/document.xml.rels', text: docRels      }
+  ], 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+}
+
+// Lazy CRC-32 table
+let _crcTable = null;
+function getCrcTable() {
+  if (_crcTable) return _crcTable;
+  _crcTable = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    _crcTable[i] = c;
+  }
+  return _crcTable;
+}
+
+function crc32bytes(data) {
+  const t   = getCrcTable();
+  let   crc = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) crc = t[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function u16(v) { return [v & 0xff, (v >> 8) & 0xff]; }
+function u32(v) { return [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]; }
+
+function zipToBlob(files, mimeType) {
+  const enc     = new TextEncoder();
+  const entries = files.map(f => {
+    const nameBytes = enc.encode(f.name);
+    const dataBytes = enc.encode(f.text);
+    return { nameBytes, dataBytes, crc: crc32bytes(dataBytes) };
+  });
+
+  const parts   = [];
+  const offsets = [];
+  let offset    = 0;
+
+  for (const e of entries) {
+    offsets.push(offset);
+    const hdr = new Uint8Array([
+      0x50,0x4b,0x03,0x04,
+      20,0, 0,0, 0,0, 0,0,0,0,
+      ...u32(e.crc),
+      ...u32(e.dataBytes.length),
+      ...u32(e.dataBytes.length),
+      ...u16(e.nameBytes.length),
+      0,0,
+      ...e.nameBytes
+    ]);
+    parts.push(hdr, e.dataBytes);
+    offset += hdr.length + e.dataBytes.length;
+  }
+
+  const cdOffset = offset;
+  for (let i = 0; i < entries.length; i++) {
+    const e  = entries[i];
+    const cd = new Uint8Array([
+      0x50,0x4b,0x01,0x02,             // central dir signature
+      20,0,                             // version made by
+      20,0,                             // version needed
+      0,0,                              // general purpose flags
+      0,0,                              // compression method (STORE)
+      0,0,0,0,                         // last mod time + date
+      ...u32(e.crc),                    // CRC-32
+      ...u32(e.dataBytes.length),       // compressed size
+      ...u32(e.dataBytes.length),       // uncompressed size
+      ...u16(e.nameBytes.length),       // file name length
+      0,0,                              // extra field length
+      0,0,                              // file comment length
+      0,0,                              // disk number start
+      0,0,                              // internal file attributes  ← 2 bytes, not 4
+      0,0,0,0,                         // external file attributes
+      ...u32(offsets[i]),               // relative offset of local header
+      ...e.nameBytes
+    ]);
+    parts.push(cd);
+    offset += cd.length;
+  }
+
+  const cdSize = offset - cdOffset;
+  const eocd   = new Uint8Array([
+    0x50,0x4b,0x05,0x06,
+    0,0, 0,0,
+    ...u16(entries.length),
+    ...u16(entries.length),
+    ...u32(cdSize),
+    ...u32(cdOffset),
+    0,0
+  ]);
+  parts.push(eocd);
+
+  const total = parts.reduce((s, p) => s + p.length, 0);
+  const buf   = new Uint8Array(total);
+  let   pos   = 0;
+  for (const p of parts) { buf.set(p, pos); pos += p.length; }
+
+  return new Blob([buf], { type: mimeType });
+}
 
 // ── Utility ───────────────────────────────────────────────────────
 function pad(n) { return String(n).padStart(2, '0'); }

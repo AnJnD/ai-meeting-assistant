@@ -12,7 +12,7 @@
       width: 400px;
       background: #fff;
       color: #202124;
-      overflow: hidden; /* popup không cuộn dọc */
+      overflow: hidden;
     }
 
     /* ── Header ── */
@@ -46,29 +46,35 @@
       font-weight: 600;
       padding: 3px 9px;
       border-radius: 10px;
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 4px;
       background: rgba(255,255,255,.14);
       color: rgba(255,255,255,.75);
       white-space: nowrap;
     }
-    .status-pill.active {
-      background: #34a853;
-      color: #fff;
-    }
-    .status-pill.stopped {
-      background: #ea4335;
-      color: #fff;
-    }
+    .status-pill.active  { background: #34a853; color: #fff; }
+    .status-pill.stopped { background: #f9ab00; color: #fff; }
     .status-pill .s-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
+      width: 6px; height: 6px; border-radius: 50%;
       background: currentColor;
       animation: blink 1.4s infinite;
     }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* Recording elapsed timer */
+    .rec-timer {
+      font-size: 11px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      background: rgba(255,255,255,.12);
+      color: rgba(255,255,255,.9);
+      padding: 3px 8px;
+      border-radius: 8px;
+      letter-spacing: .04em;
+      white-space: nowrap;
+    }
+    .rec-timer.frozen { opacity: .55; }
 
     /* ── Tabs ── */
     .tabs {
@@ -100,7 +106,7 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
-    /* ── Control tab content ── */
+    /* ── Body padding block ── */
     .p-body { padding: 10px 12px; }
 
     /* Provider info */
@@ -125,7 +131,7 @@
       margin-bottom: 6px;
     }
 
-    /* Buttons */
+    /* Generic full-width button */
     .btn {
       width: 100%;
       padding: 9px;
@@ -144,16 +150,9 @@
     .btn-blue { background: #1a73e8; color: #fff; }
     .btn-blue:hover { background: #1557b0; }
     .btn-blue:disabled { background: #bdbdbd; cursor: not-allowed; }
-    .btn-red { background: #ea4335; color: #fff; }
-    .btn-red:hover { background: #c5221f; }
-    .btn-outline { background: #fff; color: #5f6368; border: 1.5px solid #dadce0; }
-    .btn-outline:hover { background: #f1f3f4; }
-    .stopped-actions { display: flex; gap: 8px; }
 
-    /* ── Sections (active view) ── */
-    .p-section {
-      margin-bottom: 8px;
-    }
+    /* ── Section ── */
+    .p-section { margin-bottom: 8px; }
     .section-header {
       display: flex;
       align-items: center;
@@ -168,7 +167,6 @@
       text-transform: uppercase;
       color: #5f6368;
     }
-    .section-title.purple { color: #7b1fa2; }
     .platform-badge {
       font-size: 10px;
       font-weight: 600;
@@ -179,9 +177,9 @@
       gap: 3px;
     }
     .platform-badge svg { width: 10px; height: 10px; }
-    .badge-meet   { background: #e8f0fe; color: #1a73e8; }
-    .badge-teams  { background: #ede7f6; color: #512da8; }
-    .badge-mic    { background: #e6f4ea; color: #137333; }
+    .badge-meet  { background: #e8f0fe; color: #1a73e8; }
+    .badge-teams { background: #ede7f6; color: #512da8; }
+    .badge-mic   { background: #e6f4ea; color: #137333; }
     .cc-icon {
       font-size: 10px;
       font-weight: 800;
@@ -194,8 +192,8 @@
       justify-content: center;
       position: relative;
     }
-    .cc-on  { background: #e6f4ea; color: #137333; border: 1.5px solid #34a853; }
-    .cc-off { background: #fce8e6; color: #c5221f; border: 1.5px solid #ea4335; }
+    .cc-on        { background: #e6f4ea; color: #137333; border: 1.5px solid #34a853; }
+    .cc-off       { background: #fce8e6; color: #c5221f; border: 1.5px solid #ea4335; }
     .cc-searching { background: #e8f0fe; color: #1a73e8; border: 1.5px solid #1a73e8; animation: blink 1s infinite; }
     .cc-slash {
       position: absolute;
@@ -232,7 +230,7 @@
       background: #f8f9fa;
       border: 1px solid #e8eaed;
       border-radius: 6px;
-      height: 138px;
+      height: 210px;
       overflow-y: auto;
       padding: 7px 9px;
       font-size: 13px;
@@ -272,17 +270,116 @@
     .ai-speaker-e { background:#f3e8fd; color:#7b1fa2; }
     .ai-speaker-f { background:#e0f7fa; color:#006064; }
 
-    /* ── Footer row ── */
+    /* ── Footer row (transcript actions) ── */
     .footer-row {
       display: flex;
       gap: 4px;
       align-items: center;
       margin-top: 5px;
-      flex-wrap: wrap;
     }
 
-    /* ── Saved indicator ── */
-    .saved-indicator {
+    /* ── 3-button action footer — single row ── */
+    .action-footer {
+      padding: 8px 12px 10px;
+      display: flex;
+      flex-direction: row;
+      gap: 6px;
+      align-items: stretch;
+      border-top: 1px solid #e8eaed;
+    }
+
+    /* Pause & End share the same card-style base */
+    .btn-pause,
+    .btn-resume-g,
+    .btn-end {
+      flex: 1;
+      padding: 8px 4px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      transition: background .15s, border-color .15s;
+      min-height: 54px;
+    }
+    .btn-pause svg, .btn-resume-g svg, .btn-end svg { width: 16px; height: 16px; }
+
+    /* Pause: white bg, gray border */
+    .btn-pause   { background: #fff; border: 1.5px solid #dadce0; color: #5f6368; }
+    .btn-pause:hover { background: #f1f3f4; }
+
+    /* Resume: white bg, green border */
+    .btn-resume-g { background: #fff; border: 1.5px solid #34a853; color: #34a853; }
+    .btn-resume-g:hover { background: #e6f4ea; }
+
+    /* End: white bg, red border, red text */
+    .btn-end     { background: #fff; border: 1.5px solid #ea4335; color: #ea4335; }
+    .btn-end:hover { background: #fce8e6; }
+
+    /* Meeting Minutes CTA: blue bg, wider, dashed border */
+    .btn-minutes {
+      flex: 2;
+      padding: 8px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 700;
+      background: #4F6EF7;
+      color: #fff;
+      border: 2px dashed rgba(255,255,255,.55);
+      transition: background .15s;
+      min-height: 54px;
+    }
+    .btn-minutes:hover { background: #3d5ce0; }
+    .btn-minutes:disabled { background: #bdbdbd; border-color: transparent; cursor: not-allowed; }
+    .btn-minutes svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+    /* ── Meeting Minutes panel ── */
+    .mm-panel-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #e8eaed;
+      background: #faf7ff;
+    }
+    .mm-back-btn {
+      background: #fff;
+      border: 1px solid #dadce0;
+      border-radius: 5px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      color: #5f6368;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .mm-back-btn:hover { background: #f1f3f4; }
+    .mm-back-btn svg { width: 12px; height: 12px; }
+    .mm-panel-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #7b1fa2;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 1;
+    }
+    .mm-panel-title svg { width: 13px; height: 13px; }
+    .mm-saved-badge {
       font-size: 10px;
       color: #7b1fa2;
       background: #f3e8fd;
@@ -292,36 +389,18 @@
       display: inline-flex;
       align-items: center;
       gap: 3px;
-    }
-    .saved-indicator:empty { display: none; }
-    .saved-indicator svg { width: 10px; height: 10px; }
-
-    /* Gijiroku action button */
-    .action-btn {
-      background: #9c27b0;
-      color: #fff;
-      border: none;
-      border-radius: 14px;
-      padding: 4px 12px;
-      font-size: 11px;
-      font-weight: 600;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
       white-space: nowrap;
-      transition: background .15s;
     }
-    .action-btn svg { width: 11px; height: 11px; }
-    .action-btn:hover { background: #6a1b9a; }
-    .action-btn:disabled { background: #bdbdbd; cursor: not-allowed; }
+    .mm-saved-badge svg { width: 10px; height: 10px; }
 
-    /* ── Result box (gijiroku) ── */
+    .mm-body { padding: 6px 12px 0; }
+
+    /* ── Result box (minutes content) ── */
     .result-box {
-      background: #fff;
-      border: 1.5px solid #9c27b0;
+      background: #faf7ff;
+      border: 1.5px solid #ce93d8;
       border-radius: 6px;
-      height: 148px;
+      height: 210px;
       overflow-y: auto;
       padding: 8px 10px;
       font-size: 12.5px;
@@ -333,10 +412,6 @@
     .result-box.loading { color: #9aa0a6; font-style: italic; }
 
     /* ── Loading bar ── */
-    .loading-bar-wrap {
-      position: relative;
-      height: 0;
-    }
     .loading-bar {
       height: 2px;
       background: linear-gradient(90deg, transparent 0%, #9c27b0 40%, #fbbc04 60%, transparent 100%);
@@ -344,12 +419,19 @@
       animation: loadslide 1.2s linear infinite;
       border-radius: 3px;
       display: none;
+      margin: 0 12px;
     }
     .loading-bar.active { display: block; }
     @keyframes loadslide { 0%{background-position:100% 0} 100%{background-position:-100% 0} }
 
-    /* ── Divider ── */
-    .p-divider { border: none; border-top: 1px solid #e8eaed; margin: 8px 0; }
+    /* MM action footer */
+    .mm-action-footer {
+      padding: 7px 12px 10px;
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      border-top: 1px solid #e8eaed;
+    }
 
     /* ── Settings tab ── */
     .settings-body { padding: 12px; }
@@ -521,6 +603,7 @@
     </div>
     <span class="header-title">AI Meeting Assistant</span>
     <span class="status-pill" id="statusPill">Chưa hoạt động</span>
+    <span class="rec-timer" id="recTimer" style="display:none">00:00</span>
   </div>
 
   <!-- ── Tabs ── -->
@@ -562,124 +645,153 @@
     </div>
 
     <!-- ── ACTIVE VIEW ── -->
-    <div id="view-active" class="p-body" style="display:none">
+    <div id="view-active" style="display:none">
+      <div class="p-body" style="padding-bottom:0">
 
-      <!-- Transcript -->
-      <div class="p-section">
-        <div class="section-header">
-          <span class="section-title">Transcript</span>
-          <span id="platformBadge" class="platform-badge" style="display:none"></span>
-          <span id="ccIcon" class="cc-icon" style="display:none"><span class="cc-label">CC</span></span>
-          <span class="spacer"></span>
-          <button class="icon-btn" id="reloadBtn" title="Khởi động lại nhận dạng">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 8a5 5 0 0 1 8.5-3.5L13 6"/><path d="M13 2.5V6H9.5"/>
-              <path d="M13 8a5 5 0 0 1-8.5 3.5L3 10"/><path d="M3 13.5V10h3.5"/>
-            </svg>
-            Reload
-          </button>
+        <!-- Transcript -->
+        <div class="p-section">
+          <div class="section-header">
+            <span class="section-title">Transcript</span>
+            <span id="platformBadge" class="platform-badge" style="display:none"></span>
+            <span id="ccIcon" class="cc-icon" style="display:none"><span class="cc-label">CC</span></span>
+            <span class="spacer"></span>
+            <button class="icon-btn" id="reloadBtn" title="Khởi động lại nhận dạng">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 8a5 5 0 0 1 8.5-3.5L13 6"/><path d="M13 2.5V6H9.5"/>
+                <path d="M13 8a5 5 0 0 1-8.5 3.5L3 10"/><path d="M3 13.5V10h3.5"/>
+              </svg>
+              Reload
+            </button>
+          </div>
+          <div class="transcript-box" id="transcriptBox">
+            <span class="placeholder">Đang chờ người nói...</span>
+          </div>
+          <div class="footer-row">
+            <button class="icon-btn blue" id="copyTranscriptBtn" title="Copy transcript">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/>
+              </svg>
+              Copy
+            </button>
+            <button class="icon-btn blue" id="dlScriptBtn" title="Tải transcript">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
+              </svg>
+              Tải
+            </button>
+            <span class="spacer"></span>
+            <button class="icon-btn danger" id="clearTranscriptBtn" title="Xóa transcript hiển thị">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="2.5" y1="4.5" x2="13.5" y2="4.5"/>
+                <path d="M4.5 4.5V13a1.5 1.5 0 0 0 1.5 1.5h4A1.5 1.5 0 0 0 11.5 13V4.5"/>
+                <path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/>
+                <line x1="7" y1="7" x2="7" y2="12"/><line x1="9" y1="7" x2="9" y2="12"/>
+              </svg>
+              Xóa
+            </button>
+          </div>
         </div>
-        <div class="transcript-box" id="transcriptBox">
-          <span class="placeholder">Đang chờ người nói...</span>
-        </div>
-        <div class="footer-row">
-          <button class="icon-btn blue" id="copyTranscriptBtn" title="Copy transcript">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/>
-            </svg>
-            Copy
-          </button>
-          <button class="icon-btn blue" id="dlScriptBtn" title="Tải transcript">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
-            </svg>
-            Tải
-          </button>
-          <span class="spacer"></span>
-          <button class="icon-btn danger" id="clearTranscriptBtn" title="Xóa transcript hiển thị (giữ buffer)">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 12l5-5 5 5"/><path d="M6 15l-3-3 7-7a1.5 1.5 0 0 1 2 0l2 2a1.5 1.5 0 0 1 0 2l-4 4z"/>
-              <line x1="2" y1="15" x2="14" y2="15"/>
-            </svg>
-            Xóa
-          </button>
-          <button class="icon-btn danger" id="resetSavedBtn" title="Đặt lại toàn bộ dữ liệu">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="2.5" y1="4.5" x2="13.5" y2="4.5"/>
-              <path d="M4.5 4.5V13a1.5 1.5 0 0 0 1.5 1.5h4A1.5 1.5 0 0 0 11.5 13V4.5"/>
-              <path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/>
-              <line x1="7" y1="7" x2="7" y2="12"/><line x1="9" y1="7" x2="9" y2="12"/>
-            </svg>
-            Đặt lại
-          </button>
-        </div>
-      </div>
 
-      <hr class="p-divider">
+      </div><!-- /.p-body -->
 
-      <!-- Meeting Minutes -->
-      <div class="p-section">
-        <div class="section-header">
-          <span class="section-title purple">Meeting Minutes</span>
-          <span class="saved-indicator" id="savedCount"></span>
-          <span class="spacer"></span>
-          <button class="action-btn" id="gijirokuBtn">
-            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
-            Generate
-          </button>
-        </div>
-        <div class="loading-bar" id="gijirokuBar"></div>
-        <div class="result-box" id="gijirokuBox">Nhấn "Generate" để tạo biên bản họp.</div>
-        <div class="footer-row">
-          <button class="icon-btn blue" id="copyGijirokuBtn" title="Copy meeting minutes">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/>
-            </svg>
-            Copy
-          </button>
-          <button class="icon-btn blue" id="dlGijirokuBtn" title="Download meeting minutes">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
-            </svg>
-            Tải
-          </button>
-          <span class="spacer"></span>
-          <button class="icon-btn danger" id="clearGijirokuBtn" title="Clear meeting minutes">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 12l5-5 5 5"/><path d="M6 15l-3-3 7-7a1.5 1.5 0 0 1 2 0l2 2a1.5 1.5 0 0 1 0 2l-4 4z"/>
-              <line x1="2" y1="15" x2="14" y2="15"/>
-            </svg>
-            Xóa
-          </button>
-        </div>
-      </div>
-
-      <hr class="p-divider">
-
-      <!-- Footer: recording mode -->
-      <div id="footer-recording">
-        <button class="btn btn-red" id="stopBtn">
-          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1"/></svg>
-          Dừng
+      <!-- ── 3-button action footer — single row ── -->
+      <div class="action-footer">
+        <!-- Tạm dừng: shown while recording -->
+        <button class="btn-pause" id="stopBtn">
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <rect x="4" y="3" width="3" height="10" rx="1"/>
+            <rect x="9" y="3" width="3" height="10" rx="1"/>
+          </svg>
+          Tạm dừng
+        </button>
+        <!-- Tiếp tục: shown while paused -->
+        <button class="btn-resume-g" id="resumeBtn" style="display:none">
+          <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
+          Tiếp tục
+        </button>
+        <!-- Kết thúc: always visible -->
+        <button class="btn-end" id="newSessionBtn">
+          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>
+          Kết thúc
+        </button>
+        <!-- Meeting Minutes CTA: blue, wider, dashed border -->
+        <button class="btn-minutes" id="minutesBtn">
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 1.2L9.1 5.5l4.3 1.1-4.3 1.1L8 12l-1.1-4.3L2.6 6.6l4.3-1.1z"/>
+          </svg>
+          Meeting Minutes
         </button>
       </div>
+    </div><!-- /#view-active -->
 
-      <!-- Footer: stopped/reviewing mode -->
-      <div id="footer-stopped" style="display:none">
-        <div class="stopped-actions">
-          <button class="btn btn-blue" id="resumeBtn">
-            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
-            Tiếp tục
-          </button>
-          <button class="btn btn-outline" id="newSessionBtn">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-              <line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>
-            </svg>
-            Kết thúc
-          </button>
-        </div>
+    <!-- ── MEETING MINUTES VIEW ── -->
+    <div id="view-minutes" style="display:none">
+      <!-- Panel header -->
+      <div class="mm-panel-header">
+        <button class="mm-back-btn" id="minutesBackBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 3L5 8l5 5"/>
+          </svg>
+          Quay lại
+        </button>
+        <span class="mm-panel-title">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 2h6l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
+            <path d="M10 2v3h3"/>
+            <line x1="5" y1="8" x2="11" y2="8"/>
+            <line x1="5" y1="11" x2="9" y2="11"/>
+          </svg>
+          議事録 / Meeting Minutes
+        </span>
+        <span class="mm-saved-badge" id="minutesSavedBadge" style="display:none">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 8.5l3 3 7-7"/>
+          </svg>
+          Đã tạo
+        </span>
       </div>
-    </div>
+
+      <!-- Loading bar -->
+      <div class="loading-bar" id="minutesLoadingBar"></div>
+
+      <!-- Result -->
+      <div class="mm-body">
+        <div class="result-box" id="minutesBox"></div>
+      </div>
+
+      <!-- Actions -->
+      <div class="mm-action-footer">
+        <button class="icon-btn blue" id="copyMinutesBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/>
+          </svg>
+          Copy
+        </button>
+        <button class="icon-btn blue" id="dlTxtBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
+          </svg>
+          .txt
+        </button>
+        <button class="icon-btn blue" id="dlDocxBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 2h6l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
+            <path d="M10 2v3h3"/>
+            <line x1="5" y1="9" x2="11" y2="9"/>
+          </svg>
+          .docx
+        </button>
+        <span class="spacer"></span>
+        <button class="icon-btn danger" id="clearMinutesBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="2.5" y1="4.5" x2="13.5" y2="4.5"/>
+            <path d="M4.5 4.5V13a1.5 1.5 0 0 0 1.5 1.5h4A1.5 1.5 0 0 0 11.5 13V4.5"/>
+            <path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/>
+          </svg>
+          Xóa
+        </button>
+      </div>
+    </div><!-- /#view-minutes -->
 
   </div><!-- /tab-control -->
 

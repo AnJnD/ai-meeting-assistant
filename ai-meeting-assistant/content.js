@@ -55,24 +55,36 @@ function detectPlatform() {
 // ════════════════════════════════════════════════════════════════
 const MEET_SELECTORS = {
   container: [
+    // Attribute selectors (jsname/jscontroller change with Meet updates — keep adding new ones)
     '[jsname="tgaKEf"]','[jsname="r4nke"]','[jscontroller="TEtAUc"]',
+    '[jsname="dsyhDe"]','[jsname="xsSM3d"]','[jsname="r1xuRe"]','[jsname="WbE0Tb"]',
+    '[jsname="DzpKZ"]','[jsname="K4t3lf"]','[jsname="Xp8aoc"]',
+    // Class / id selectors
     '.a4cQT','.iOzk7','[data-is-live-captions]','[data-allocation-index]',
+    '[data-caption-track]','[data-use-tooltip]',
+    // Aria / id selectors
     '[aria-label*="caption" i]','[aria-label*="phụ đề" i]','[aria-label*="字幕" i]',
-    '#captions-area','#closed-captions',
+    '[aria-label*="transcript" i]',
+    '#captions-area','#closed-captions','#caption-window',
   ],
   utterance: [
     '[jsname="YSxPC"]','[data-message-id]','.TBnnIe',
     '[jsname="EzdYDd"]','.zs7s8d','[jsname="hsRoVb"]',
+    '[jsname="K4t3lf"]','[jsname="Xp8aoc"]','[jsname="bZSrOf"]',
     'div[class*="caption"]','div[class*="Caption"]',
+    '[data-speaker-id]','[data-participant-id]',
   ],
   speakerName: [
     '[data-sender-name]','[jsname="r4nke"]','.KF4T6b',
     '[jsname="sxbVqd"]','.EfDTvc','[data-self-name]',
+    '[jsname="bZSrOf"]','[jsname="RJB3sc"]',
     'span[class*="speaker" i]','span[class*="name" i]',
+    '[data-speaker-id]',
   ],
   captionText: [
     'span[jsname="YSxPC"]','.iTTPOb span','[jsname="bRfDP"]',
     '.CNusmb','span[class*="caption" i]',
+    '[jsname="K4t3lf"] span','[jsname="Xp8aoc"] span',
   ]
 };
 
@@ -106,13 +118,31 @@ function stripMeetSettingsHeader(text) {
   return text;
 }
 
-// Extract a Latin speaker name from the beginning of cleaned Meet CC text.
-// e.g., "You はい、おはようございます" → { speaker: 'You', text: 'はい...' }
+// Extract speaker name + caption text from a raw text blob.
+// Supports: multiline (first short line = speaker), colon format, Japanese prefix.
 function extractMeetFallbackSpeaker(text) {
-  const m = text.match(/^([A-Z][a-zA-Z\s,\.]{0,40}?)\s+(?=[ぁ-ヿ㐀-䶿一-鿿぀-鿿])/);
-  if (m) {
-    const spk = m[1].trim();
-    if (spk && !isMeetUIText(spk)) return { speaker: spk, text: text.slice(m[0].length).trim() };
+  // Pattern 1: multi-line — first line is the speaker name
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  if (lines.length >= 2) {
+    const first = lines[0];
+    const body  = lines.slice(1).join(' ');
+    // Short first line that doesn't end with sentence punctuation = speaker name
+    if (first.length <= 60 && !isMeetUIText(first) && !/[。、！？!?,.]$/.test(first)) {
+      return { speaker: first, text: body };
+    }
+  }
+  // Pattern 2: "Speaker Name: caption text"
+  const mColon = text.match(/^([^:\n]{2,50}):\s+(.+)/s);
+  if (mColon) {
+    const spk = mColon[1].trim();
+    if (!isMeetUIText(spk) && spk.split(/\s+/).length <= 5)
+      return { speaker: spk, text: mColon[2].trim() };
+  }
+  // Pattern 3: Latin name immediately before Japanese text (original logic)
+  const mJa = text.match(/^([A-Z][a-zA-Z\s,\.]{0,40}?)\s+(?=[ぁ-ヿ㐀-䶿一-鿿぀-鿿])/);
+  if (mJa) {
+    const spk = mJa[1].trim();
+    if (spk && !isMeetUIText(spk)) return { speaker: spk, text: text.slice(mJa[0].length).trim() };
   }
   return { speaker: 'Speaker', text };
 }
@@ -125,21 +155,36 @@ function trySelect(parent, list) {
 }
 
 function findMeetContainer() {
+  // Strategy 1: known attribute/class selectors
   for (const s of MEET_SELECTORS.container) {
     try { const e = document.querySelector(s); if (e) return e; } catch(_) {}
   }
+  // Strategy 2: aria-label on region/log/status roles
   for (const r of document.querySelectorAll('[role="region"],[role="log"],[role="status"]')) {
     const l = (r.getAttribute('aria-label') || '').toLowerCase();
-    if (l.includes('caption') || l.includes('subtitle') || l.includes('字幕')) return r;
+    if (l.includes('caption') || l.includes('subtitle') || l.includes('字幕') || l.includes('transcript')) return r;
   }
+  // Strategy 3: aria-live elements (Meet uses these for accessibility on caption containers)
+  for (const el of document.querySelectorAll('[aria-live="polite"],[aria-live="assertive"]')) {
+    const text = (el.innerText || '').trim();
+    if (text.length < 5 || text.length > 4000) continue;
+    const rect = el.getBoundingClientRect();
+    const cs   = window.getComputedStyle(el);
+    if (rect.width < 100 || rect.height < 20) continue;
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    return el;
+  }
+  // Strategy 4: position heuristic — relaxed (any language, lower 60% of screen)
   for (const d of document.querySelectorAll('div')) {
-    if (d.children.length < 1 || d.children.length > 12) continue;
+    if (d.children.length < 1 || d.children.length > 20) continue;
     const rect = d.getBoundingClientRect();
     const cs   = window.getComputedStyle(d);
-    if (rect.top   < window.innerHeight * 0.5) continue;
-    if (rect.bottom > window.innerHeight * 0.98) continue;
-    if (cs.display === 'none' || cs.visibility === 'hidden' || rect.width < 100) continue;
-    if (/[぀-ヿ㐀-䶿一-鿿]/.test(d.innerText || '') && (d.innerText||'').trim().length > 3) return d;
+    if (rect.top    < window.innerHeight * 0.35) continue;
+    if (rect.height < 24 || rect.width < 100)    continue;
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    const text = (d.innerText || '').trim();
+    // Accept any visible text in the lower portion of the page
+    if (text.length > 3 && text.length < 4000) return d;
   }
   return null;
 }
@@ -160,11 +205,27 @@ function parseMeetCaption(node) {
   let speaker = speakerEl?.textContent?.trim() ||
     node.getAttribute('data-sender-name') ||
     node.closest('[data-sender-name]')?.getAttribute('data-sender-name') ||
-    'Speaker';
+    '';
   let textEl = trySelect(node, MEET_SELECTORS.captionText);
-  let text = textEl?.textContent?.trim() || node.textContent?.trim() || '';
+  let text;
+  if (textEl) {
+    text = textEl.textContent?.trim() || '';
+  } else {
+    // No specific text element — strip speaker name from full node text
+    const full = node.textContent?.trim() || '';
+    text = (speaker && full.startsWith(speaker))
+      ? full.slice(speaker.length).trim()
+      : full;
+  }
+  // Fallback: if no speaker found yet, try extracting from multi-line text
+  if (!speaker) {
+    const parsed = extractMeetFallbackSpeaker(text);
+    speaker = parsed.speaker;
+    text    = parsed.text;
+  }
   if (isMeetUIText(text))    text = '';
   if (isMeetUIText(speaker)) speaker = 'Speaker';
+  if (!speaker) speaker = 'Speaker';
   return { speaker, text };
 }
 
@@ -292,22 +353,22 @@ function findTeamsContainer() {
   for (const el of dataTids) {
     if ((el.getAttribute('data-tid') || '').toLowerCase().includes('caption')) return el;
   }
+  // Strategy 3: heuristic panel scan
   const candidates = document.querySelectorAll('div, section, aside');
   for (const el of candidates) {
     const text = el.innerText || '';
-    const hasMultiLines = text.split('\n').filter(l => l.trim().length > 2).length >= 2;
-    const hasJaOrEn = /[぀-ヿ㐀-䶿一-鿿a-zA-Z]/.test(text);
+    const lines = text.split('\n').filter(l => l.trim().length > 2);
+    if (lines.length < 2) continue;
     const rect = el.getBoundingClientRect();
-    const isPanel = rect.width > 100 && rect.width < window.innerWidth * 0.6
-                 && rect.height > 80 && rect.height < window.innerHeight * 0.9;
+    const isPanel = rect.width > 100 && rect.width < window.innerWidth * 0.7
+                 && rect.height > 60 && rect.height < window.innerHeight * 0.95;
     const cs = window.getComputedStyle(el);
-    const isVisible = cs.display !== 'none' && cs.visibility !== 'hidden';
+    if (!isPanel || cs.display === 'none' || cs.visibility === 'hidden') continue;
     const childCount = el.children.length;
-    if (hasMultiLines && hasJaOrEn && isPanel && isVisible && childCount >= 2 && childCount <= 50) {
-      const hasSpeakerPattern = /[A-Z][a-z]+,\s*[A-Z]/.test(text) ||
-                                 /[一-鿿]{2,}/.test(text);
-      if (hasSpeakerPattern) return el;
-    }
+    if (childCount < 2 || childCount > 60) continue;
+    // Accept if there are at least 2 short lines (looks like speaker + text)
+    const shortLines = lines.filter(l => l.trim().length < 80);
+    if (shortLines.length >= 2) return el;
   }
   return null;
 }
