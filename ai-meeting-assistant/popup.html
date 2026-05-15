@@ -531,6 +531,95 @@
     }
     .note svg { flex-shrink: 0; margin-top: 1px; width: 12px; height: 12px; }
 
+    /* ── History section ── */
+    .history-empty {
+      font-size: 11px;
+      color: #9aa0a6;
+      font-style: italic;
+      padding: 12px 0;
+      text-align: center;
+    }
+    .history-item {
+      background: #f8f9fa;
+      border: 1px solid #e8eaed;
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 8px;
+      transition: border-color .15s;
+    }
+    .history-item:hover { border-color: #dadce0; }
+    .history-item-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .history-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #202124;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .history-delete-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px;
+      color: #5f6368;
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .history-delete-btn:hover { color: #c5221f; background: #fce8e6; }
+    .history-delete-btn svg { width: 14px; height: 14px; }
+    .history-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .history-platform {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 10px;
+    }
+    .history-platform.hp-meet { background: #e8f0fe; color: #1a73e8; }
+    .history-platform.hp-teams { background: #ede7f6; color: #512da8; }
+    .history-platform.hp-other { background: #e6f4ea; color: #137333; }
+    .history-date {
+      font-size: 10px;
+      color: #80868b;
+    }
+    .history-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .history-dl-btn {
+      flex: 1;
+      background: #fff;
+      border: 1px solid #dadce0;
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #1a73e8;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      transition: background .15s;
+    }
+    .history-dl-btn:hover { background: #e8f0fe; }
+    .history-dl-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .history-dl-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+
     /* ICO spin */
     @keyframes ico-spin { to { transform: rotate(360deg); } }
     .ico-spin { animation: ico-spin .9s linear infinite; transform-origin: 50% 50%; }
@@ -870,6 +959,18 @@
           </svg>
           <span><b>platform.openai.com</b><br>Model: gpt-4o-mini</span>
         </div>
+      </div>
+
+      <!-- ── History Section ── -->
+      <div style="margin-top: 16px; border-top: 1px solid #e8eaed; padding-top: 12px;">
+        <div class="section-title-settings">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="8" cy="8" r="6.5"/>
+            <polyline points="8 4.5 8 8 10.5 9.5"/>
+          </svg>
+          Lịch sử cuộc họp
+        </div>
+        <div id="historyList"></div>
       </div>
     </div>
   </div><!-- /tab-settings -->

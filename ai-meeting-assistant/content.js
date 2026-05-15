@@ -138,11 +138,25 @@ function extractMeetFallbackSpeaker(text) {
     if (!isMeetUIText(spk) && spk.split(/\s+/).length <= 5)
       return { speaker: spk, text: mColon[2].trim() };
   }
-  // Pattern 3: Latin name immediately before Japanese text (original logic)
-  const mJa = text.match(/^([A-Z][a-zA-Z\s,\.]{0,40}?)\s+(?=[ぁ-ヿ㐀-䶿一-鿿぀-鿿])/);
-  if (mJa) {
-    const spk = mJa[1].trim();
-    if (spk && !isMeetUIText(spk)) return { speaker: spk, text: text.slice(mJa[0].length).trim() };
+  // Pattern 3: Latin name (with optional prefix/suffix parens) before content
+  const mLatin = text.match(/^((?:[\(（][^\)）]{1,20}[\)）]\s+)?[A-Z][a-zA-Z\.\-]+(?:\s+[A-Z][a-zA-Z\.\-]*){0,4}(?:\s*[\(（][^\)）]{1,40}[\)）])?)\s+/);
+  if (mLatin) {
+    const spk = mLatin[1].trim()
+      .replace(/^[\(（][^\)）]{1,20}[\)）]\s+/, '')
+      .replace(/\s*[\(（][^\)）]{1,40}[\)）]$/, '');
+    if (spk && !isMeetUIText(spk) && spk.length >= 3) return { speaker: spk, text: text.slice(mLatin[0].length).trim() };
+  }
+  // Pattern 4: Japanese name (kanji surname + space + given name in kanji/katakana)
+  const mJaName = text.match(/^([々一-鿿]{2,4}[\s　][々一-鿿ァ-ヶー]{1,6}(?:\s*[\(（][^\)）]{1,40}[\)）])?)\s+/);
+  if (mJaName) {
+    const spk = mJaName[1].trim().replace(/\s*[\(（][^\)）]{1,40}[\)）]$/, '');
+    if (spk && !isMeetUIText(spk)) return { speaker: spk, text: text.slice(mJaName[0].length).trim() };
+  }
+  // Pattern 5: Katakana-only name (e.g. タナカ ハルキ or タナカハルキ)
+  const mKata = text.match(/^([ァ-ヶー]{2,8}(?:[\s　][ァ-ヶー]{2,8})?)\s+/);
+  if (mKata) {
+    const spk = mKata[1].trim();
+    if (spk.length >= 4 && !isMeetUIText(spk)) return { speaker: spk, text: text.slice(mKata[0].length).trim() };
   }
   return { speaker: 'Speaker', text };
 }
@@ -450,11 +464,66 @@ function attachTeamsObserver(container) {
   captionObserver.observe(container, { childList: true, subtree: true, characterData: true });
 }
 
+// Checks if a short line looks like a speaker name (not caption content)
+function looksLikeSpeakerName(line) {
+  const t = line.trim();
+  if (!t || t.length > 60 || t.length < 2) return false;
+  if (isMeetUIText(t)) return false;
+  // Ends with sentence punctuation → likely content, not a name
+  if (/[。、！？!?,.。]$/.test(t)) return false;
+  // Latin name: optional prefix (xxx), 1-5 capitalized words (last word can be single char e.g. "A"), optional suffix
+  if (/^(?:[\(（][^\)）]{1,20}[\)）]\s+)?[A-Z][a-zA-Z\.\-]+(?:\s+[A-Z][a-zA-Z\.\-]*){0,4}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
+  // Japanese kanji name: 2-4 kanji + space + 1-6 kanji/katakana (+ optional suffix)
+  if (/^[々一-鿿]{2,4}[\s　][々一-鿿ァ-ヶー]{1,6}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
+  // Full katakana name: with space or 5+ chars
+  if (/^[ァ-ヶー]{2,8}[\s　][ァ-ヶー]{2,8}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
+  if (/^[ァ-ヶー]{5,14}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
+  // Korean name
+  if (/^[가-힯]{2,4}[\s　]?[가-힯]{1,4}$/.test(t)) return true;
+  return false;
+}
+
 function splitBySpeak(raw) {
+  if (!raw || !raw.trim()) return [];
+
+  // Strategy 1: newline-based pairs (Teams typically uses name\ntext format)
+  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  if (lines.length >= 2) {
+    const result = [];
+    let i = 0;
+    while (i < lines.length) {
+      if (looksLikeSpeakerName(lines[i])) {
+        const speaker = lines[i]
+          .replace(/^[\(（][^\)）]{1,20}[\)）]\s+/, '')
+          .replace(/\s*[\(（][^\)）]{1,40}[\)）]$/, '')
+          .trim();
+        const textLines = [];
+        i++;
+        while (i < lines.length && !looksLikeSpeakerName(lines[i])) {
+          textLines.push(lines[i]);
+          i++;
+        }
+        if (textLines.length > 0) {
+          result.push({ speaker, text: textLines.join(' ') });
+        }
+      } else {
+        // Orphan text line — append to previous or create as unknown speaker
+        if (result.length > 0) {
+          result[result.length - 1].text += ' ' + lines[i];
+        } else {
+          result.push({ speaker: 'Speaker', text: lines[i] });
+        }
+        i++;
+      }
+    }
+    if (result.length > 0) return result;
+  }
+
+  // Strategy 2: flatten + regex (fallback for single-line or unusual format)
   const text = raw.replace(/\n+/g, ' ').trim();
   if (!text) return [];
 
-  const speakerPattern = /(?:^|(?<=\s))([A-Z][a-zA-Z,\.\-_]+(?:\s+[A-Z][a-zA-Z,\.\-_]+)*(?:\s*\([^)]{1,40}\))?(?:\/[A-Za-z0-9_\.]+)?|[々一-鿿]{2,8}(?:[\s　][々一-鿿]{1,6})?|[ァ-ヶー]{2,12}(?:[\s　][ァ-ヶー]{1,8})?|[가-힯]{2,8}(?:[\s　][가-힯]{1,6})?)\s+(?=[^\s])/g;
+  const speakerPattern = /(?:^|(?<=\s))((?:[\(（][^\)）]{1,20}[\)）]\s+)?[A-Z][a-zA-Z,\.\-_]+(?:\s+[A-Z][a-zA-Z,\.\-_]*){0,3}(?:\s*[\(（][^\)）]{1,40}[\)）])?(?:\/[A-Za-z0-9_\.]+)?|[々一-鿿]{2,4}[\s　][々一-鿿ァ-ヶー]{1,6}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[ァ-ヶー]{2,8}[\s　][ァ-ヶー]{2,8}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[ァ-ヶー]{5,14}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[가-힯]{2,4}[\s　][가-힯]{1,4}|[가-힯]{3,6})\s+(?=[^\s])/g;
 
   const splits = [];
   let match;
@@ -462,7 +531,8 @@ function splitBySpeak(raw) {
     const raw = match[1].trim();
     const display = raw
       .replace(/\/[A-Za-z0-9_.]+$/, '')
-      .replace(/\s*\([^)]{1,40}\)$/, '')
+      .replace(/^[\(（][^\)）]{1,20}[\)）]\s+/, '')
+      .replace(/\s*[\(（][^\)）]{1,40}[\)）]$/, '')
       .trim() || raw;
     splits.push({ index: match.index, speaker: display, fullLen: match[0].length });
   }
@@ -599,6 +669,16 @@ function addFinalSegment(speaker, text) {
   appendToSaved(speaker, text);
 }
 
+function cleanMeetingTitle(raw) {
+  if (!raw) return 'Untitled Meeting';
+  let t = raw
+    .replace(/\s*[-–—|]\s*Google\s*Meet\s*$/i, '')
+    .replace(/\s*[-–—|]\s*Microsoft\s*Teams\s*$/i, '')
+    .replace(/\s*[-–—|]\s*Teams\s*$/i, '')
+    .trim();
+  return t || 'Untitled Meeting';
+}
+
 function syncTranscript() {
   fullTranscript = fullSegments.map(s => `${s.speaker}: ${s.text}`).join('\n');
 }
@@ -631,6 +711,7 @@ function saveToLiveStorage() {
         savedTranscript: savedTranscript,
         savedSpeakers:  [...savedSpeakers],
         savedLines:     lines,
+        meetingTitle:   cleanMeetingTitle(document.title),
         updatedAt:      Date.now()
       }
     });
@@ -667,13 +748,21 @@ function stopAll() {
   isRecognizing = false;
   clearInterval(speechWatchdog); speechWatchdog = null;
   if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
-  if (['webspeech','meet-mic','teams-mic'].includes(captionMode)) {
-    if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
-    clearTimeout(commitTimer);
-    captureActive = false;
-    captionMode = null;
+  // Commit pending interim before stopping
+  if (interimSegment) {
+    let textToCommit = interimSegment.text;
+    if (interimSegment.fallbackBase && textToCommit.startsWith(interimSegment.fallbackBase)) {
+      textToCommit = textToCommit.slice(interimSegment.fallbackBase.length).trim();
+    }
+    if (textToCommit && textToCommit.trim().length >= 2) {
+      addFinalSegment(interimSegment.speaker, textToCommit);
+      syncTranscript();
+    }
+    interimSegment = null;
   }
-  interimSegment = null;
+  clearTimeout(commitTimer);
+  if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+  captureActive = false;
   isProcessing = false;
   persistBuffer(meetingKey(location.href));
   setBadge('', '');

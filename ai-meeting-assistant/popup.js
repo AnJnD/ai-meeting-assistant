@@ -108,6 +108,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'settings') renderHistory();
   });
 });
 
@@ -501,8 +502,11 @@ function loadState() {
     currentGijirokuKey = GIJIROKU_PREFIX + mk;
     timerKey           = TIMER_PREFIX    + mk;
 
-    chrome.storage.local.get([currentLiveKey], r => {
-      const data = r?.[currentLiveKey];
+    chrome.storage.local.get([currentLiveKey, timerKey], r => {
+      const data      = r?.[currentLiveKey];
+      const timerData = r?.[timerKey];
+      const hasPausedSession = timerData && (timerData.elapsed > 0 || timerData.startTime > 0);
+
       if (data?.active) {
         showActiveView();
         timerRestoreAndTick();
@@ -516,9 +520,10 @@ function loadState() {
             timerRestoreAndTick();
             if (data) applyLiveData(data);
             restoreMinutesFromStorage();
-          } else if (data?.savedLines > 0) {
+          } else if (data?.savedLines > 0 || hasPausedSession) {
             showStoppedView();
-            applyLiveData(data);
+            stopTimerTick();
+            if (data) applyLiveData(data);
             restoreMinutesFromStorage();
           } else {
             showInactiveView();
@@ -622,7 +627,10 @@ document.getElementById('resumeBtn').addEventListener('click', () => {
 
 // ── Kết thúc ─────────────────────────────────────────────────────
 document.getElementById('newSessionBtn').addEventListener('click', () => {
-  showConfirm('Kết thúc phiên này?\nToàn bộ transcript và biên bản họp sẽ bị xóa.', () => {
+  showConfirm('Kết thúc phiên này?\nToàn bộ transcript và biên bản họp sẽ bị xóa.', async () => {
+    // Save to history BEFORE clearing data
+    await saveToHistory();
+
     const wasRecording = isSessionActive;
 
     // Reset flags trước để storage listener không gọi showStoppedView() đè lên
@@ -1009,5 +1017,153 @@ function flashBtn(id, label) {
   setTimeout(() => { btn.innerHTML = orig; }, 1500);
 }
 
+// ─────────────────────────────────────────────────────────────────
+// HISTORY
+// ─────────────────────────────────────────────────────────────────
+
+const HISTORY_KEY     = 'mt_history';
+const HISTORY_MAX     = 3;
+const HISTORY_TTL_MS  = 7 * 24 * 60 * 60 * 1000;
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function saveToHistory() {
+  if (!currentLiveKey) return Promise.resolve();
+
+  const keys = [currentLiveKey];
+  if (currentGijirokuKey) keys.push(currentGijirokuKey);
+
+  return new Promise(resolve => {
+    chrome.storage.local.get(keys, r => {
+      const liveData = r?.[currentLiveKey];
+      const transcript = liveData?.savedTranscript?.trim();
+      if (!transcript) { resolve(); return; }
+
+      const gijiEntry = currentGijirokuKey ? r?.[currentGijirokuKey] : null;
+      const minutes = typeof gijiEntry === 'string' ? gijiEntry : (gijiEntry?.text || '');
+
+      const title = liveData?.meetingTitle || 'Untitled Meeting';
+      const platform = (liveData?.captionMode || '').split('-')[0] || 'meeting';
+      const mk = currentLiveKey.replace(LIVE_PREFIX, '');
+
+      const entry = {
+        id: mk + '_' + Date.now(),
+        title,
+        date: Date.now(),
+        transcript,
+        minutes,
+        platform
+      };
+
+      chrome.storage.local.get([HISTORY_KEY], hr => {
+        let history = hr?.[HISTORY_KEY] || [];
+        history = history.filter(e => Date.now() - e.date < HISTORY_TTL_MS);
+        history.unshift(entry);
+        if (history.length > HISTORY_MAX) history = history.slice(0, HISTORY_MAX);
+        chrome.storage.local.set({ [HISTORY_KEY]: history }, resolve);
+      });
+    });
+  });
+}
+
+function pruneExpiredHistory() {
+  chrome.storage.local.get([HISTORY_KEY], r => {
+    const history = r?.[HISTORY_KEY];
+    if (!history || !history.length) return;
+    const pruned = history.filter(e => Date.now() - e.date < HISTORY_TTL_MS);
+    if (pruned.length !== history.length) {
+      chrome.storage.local.set({ [HISTORY_KEY]: pruned });
+    }
+  });
+}
+
+function renderHistory() {
+  const container = document.getElementById('historyList');
+  if (!container) return;
+
+  chrome.storage.local.get([HISTORY_KEY], r => {
+    const history = (r?.[HISTORY_KEY] || []).filter(e => Date.now() - e.date < HISTORY_TTL_MS);
+
+    if (!history.length) {
+      container.innerHTML = '<div class="history-empty">Chưa có lịch sử cuộc họp.</div>';
+      return;
+    }
+
+    const dlIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/></svg>';
+    const trashIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+      '<line x1="2.5" y1="4.5" x2="13.5" y2="4.5"/>' +
+      '<path d="M4.5 4.5V13a1.5 1.5 0 0 0 1.5 1.5h4A1.5 1.5 0 0 0 11.5 13V4.5"/>' +
+      '<path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/></svg>';
+
+    container.innerHTML = history.map((entry, idx) => {
+      const d = new Date(entry.date);
+      const dateStr = `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const platformLabel = entry.platform === 'meet' ? 'Google Meet'
+                          : entry.platform === 'teams' ? 'Teams' : 'Meeting';
+      const platformCls = entry.platform === 'meet' ? 'hp-meet'
+                        : entry.platform === 'teams' ? 'hp-teams' : 'hp-other';
+      return `<div class="history-item" data-idx="${idx}">
+          <div class="history-item-header">
+            <span class="history-title" title="${escHtml(entry.title)}">${escHtml(entry.title)}</span>
+            <button class="history-delete-btn" data-idx="${idx}" title="Xóa">${trashIcon}</button>
+          </div>
+          <div class="history-meta">
+            <span class="history-platform ${platformCls}">${platformLabel}</span>
+            <span class="history-date">${dateStr}</span>
+          </div>
+          <div class="history-actions">
+            <button class="history-dl-btn" data-idx="${idx}" data-type="transcript">${dlIcon} Script</button>
+            <button class="history-dl-btn" data-idx="${idx}" data-type="minutes" ${!entry.minutes ? 'disabled' : ''}>${dlIcon} Minutes</button>
+          </div>
+        </div>`;
+    }).join('');
+
+    container.querySelectorAll('.history-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteHistoryEntry(parseInt(btn.dataset.idx)));
+    });
+    container.querySelectorAll('.history-dl-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.disabled) return;
+        downloadHistoryEntry(parseInt(btn.dataset.idx), btn.dataset.type);
+      });
+    });
+  });
+}
+
+function deleteHistoryEntry(idx) {
+  chrome.storage.local.get([HISTORY_KEY], r => {
+    let history = r?.[HISTORY_KEY] || [];
+    history.splice(idx, 1);
+    chrome.storage.local.set({ [HISTORY_KEY]: history }, () => renderHistory());
+  });
+}
+
+function downloadHistoryEntry(idx, type) {
+  chrome.storage.local.get([HISTORY_KEY], r => {
+    const history = r?.[HISTORY_KEY] || [];
+    const entry = history[idx];
+    if (!entry) return;
+
+    const d = new Date(entry.date);
+    const datePrefix = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+
+    if (type === 'transcript') {
+      const header = [
+        '='.repeat(50),
+        `Meeting Script — ${entry.title}`,
+        `Date: ${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`,
+        '='.repeat(50), '', entry.transcript
+      ].join('\n');
+      downloadText(header, `Script_${datePrefix}.txt`);
+    } else if (type === 'minutes' && entry.minutes) {
+      downloadText(entry.minutes, `Minutes_${datePrefix}.txt`);
+    }
+  });
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────
+pruneExpiredHistory();
 loadState();
