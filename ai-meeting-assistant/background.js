@@ -208,7 +208,7 @@ setTabIconGray(null);
 // Gray icon on meeting tab load (before content script sends badge)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete' || !tab.url) return;
-  if (/^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com)\//.test(tab.url)) {
+  if (/^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|app\.zoom\.us|zoom\.us)\//.test(tab.url)) {
     setTabIconGray(tabId);
   }
 });
@@ -220,7 +220,7 @@ chrome.commands?.onCommand.addListener(async (command) => {
     if (!tab?.id || !tab.url) return;
     if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) return;
 
-    const hostMatches = /^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com)\//.test(tab.url);
+    const hostMatches = /^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|app\.zoom\.us|zoom\.us)\//.test(tab.url);
     if (!hostMatches) return;
 
     const send = (msg) => new Promise(resolve =>
@@ -262,17 +262,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'set_badge') {
     const tabId = sender.tab?.id;
     if (tabId != null) {
-      chrome.action.setBadgeText({ text: request.text || '', tabId });
-      if (request.text) {
-        chrome.action.setBadgeBackgroundColor({ color: request.color || '#1a73e8', tabId });
-      }
-      // Active (green signal) → color icon, no badge dot; else → gray icon
-      if (request.color === '#34a853') {
-        setTabIconColor(tabId);
-        chrome.action.setBadgeText({ text: '', tabId }); // xóa badge dot
-      } else {
-        setTabIconGray(tabId);
-      }
+      try {
+        chrome.action.setBadgeText({ text: request.text || '', tabId });
+        if (request.text) {
+          chrome.action.setBadgeBackgroundColor({ color: request.color || '#1a73e8', tabId });
+        }
+        if (request.color === '#34a853') {
+          setTabIconColor(tabId);
+          chrome.action.setBadgeText({ text: '', tabId });
+        } else {
+          setTabIconGray(tabId);
+        }
+      } catch(_) {}
     }
     return false;
   }

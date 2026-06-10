@@ -1,12 +1,12 @@
 # AI Meeting Assistant
 
-Chrome extension hỗ trợ cuộc họp tiếng Nhật — ghi transcript realtime từ Google Meet / Microsoft Teams, phân tách người nói, và tạo biên bản họp (議事録) bằng AI.
+Chrome extension hỗ trợ cuộc họp tiếng Nhật — ghi transcript realtime từ Google Meet / Microsoft Teams / Zoom, phân tách người nói, và tạo biên bản họp (議事録) bằng AI.
 
 ## Tính năng chính
 
 - **Standard browser popup** — UI hiển thị ngay tại icon extension (không phải overlay), đóng khi click ra ngoài, capture vẫn chạy ngầm
 - **Icon trạng thái** — Icon xám khi chưa Start, icon màu xanh khi đang ghi, chấm vàng khi Standby
-- **Transcript realtime** — Đọc phụ đề (CC) từ Google Meet / Microsoft Teams, hiển thị theo từng người nói trong popup
+- **Transcript realtime** — Đọc phụ đề (CC) từ Google Meet / Microsoft Teams / Zoom, hiển thị theo từng người nói trong popup
 - **Phân biệt người nói** — Tự động tách tên người nói (hỗ trợ tên Latin, Kanji, Katakana, Korean, tên có prefix/suffix như `(OMN) Nguyen Van A`, `Matsumura (松村)`)
 - **Standby Mode** — Tự động ghi ngầm ngay khi mở trang họp, không cần bấm Start
 - **Tạo 議事録** — AI tạo biên bản họp chuẩn format công ty Nhật chỉ với 1 nút bấm
@@ -20,6 +20,7 @@ Chrome extension hỗ trợ cuộc họp tiếng Nhật — ghi transcript realt
 |----------|---------------|
 | Google Meet | Đọc caption từ DOM |
 | Microsoft Teams | Đọc caption từ DOM |
+| Zoom (web client) | Đọc caption từ DOM |
 | Trang khác | Web Speech API (mic) |
 
 ## Cài đặt
@@ -46,7 +47,7 @@ Chrome extension hỗ trợ cuộc họp tiếng Nhật — ghi transcript realt
 
 ## Sử dụng
 
-1. Vào cuộc họp trên Google Meet hoặc Microsoft Teams
+1. Vào cuộc họp trên Google Meet, Microsoft Teams hoặc Zoom (web client)
 2. Bật phụ đề (CC) trên nền tảng họp
 3. Bấm icon extension → tab **Control** → bấm **"Start"**
 4. Transcript hiển thị realtime trong popup; đóng popup → capture vẫn chạy ngầm, mở lại thì transcript đã cập nhật
@@ -80,7 +81,7 @@ ai-meeting-assistant/
 - Transcript chỉ lưu trên máy local (Chrome storage)
 - Chỉ gọi API khi user chủ động bấm "議事録作成"
 - Không có server trung gian
-- Extension chỉ active trên 3 domain: `meet.google.com`, `teams.microsoft.com`, `teams.live.com`
+- Extension chỉ active trên 5 domain: `meet.google.com`, `teams.microsoft.com`, `teams.live.com`, `app.zoom.us`, `zoom.us`
 
 ## License
 

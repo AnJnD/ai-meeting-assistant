@@ -25,7 +25,7 @@ const SPEAKER_COLORS = ['a','b','c','d','e','f'];
 
 // Caption scraper state
 let captionObserver  = null;
-let captionMode      = null; // 'meet-cc'|'meet-mic'|'teams-cc'|'teams-mic'|'webspeech'
+let captionMode      = null; // 'meet-cc'|'meet-mic'|'teams-cc'|'teams-mic'|'zoom-cc'|'zoom-mic'|'webspeech'
 let commitTimer      = null;
 let meetFallbackBase = ''; // tracks already-committed text in Meet CC fallback mode
 
@@ -47,6 +47,7 @@ function detectPlatform() {
   const h = location.hostname;
   if (h.includes('meet.google.com'))                                      return 'meet';
   if (h.includes('teams.microsoft.com') || h.includes('teams.live.com')) return 'teams';
+  if (h.includes('app.zoom.us') || h.includes('zoom.us')) return 'zoom';
   return 'webspeech';
 }
 
@@ -550,6 +551,138 @@ function splitBySpeak(raw) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// ZOOM — caption DOM scraper
+// ════════════════════════════════════════════════════════════════
+const ZOOM_SELECTORS = {
+  container: [
+    '[aria-label*="caption" i]',
+    '[aria-label*="transcript" i]',
+    '[aria-label*="closed caption" i]',
+    '[class*="closed-caption"]',
+    '[class*="closedCaption"]',
+    '[class*="ClosedCaption"]',
+    '[class*="caption-window"]',
+    '[class*="transcript"]',
+    '[class*="Transcript"]',
+    '[class*="live-transcription"]',
+    '[id*="caption"]',
+    '[id*="transcript"]',
+    '[class*="closed-caption--"]',
+    '[class*="caption-container"]',
+    '[role="log"]',
+    '[role="region"][aria-label*="caption" i]',
+    '[role="region"][aria-label*="transcript" i]',
+  ],
+};
+
+function findZoomContainer() {
+  for (const s of ZOOM_SELECTORS.container) {
+    try { const e = document.querySelector(s); if (e) return e; } catch(_) {}
+  }
+  for (const el of document.querySelectorAll('[aria-label]')) {
+    const label = (el.getAttribute('aria-label') || '').toLowerCase();
+    if (label.includes('caption') || label.includes('transcript') || label.includes('字幕')) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 50 && rect.height > 20) return el;
+    }
+  }
+  for (const el of document.querySelectorAll('[aria-live="polite"],[aria-live="assertive"]')) {
+    const text = (el.innerText || '').trim();
+    if (text.length < 3 || text.length > 4000) continue;
+    const rect = el.getBoundingClientRect();
+    const cs   = window.getComputedStyle(el);
+    if (rect.width < 80 || rect.height < 15) continue;
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    return el;
+  }
+  for (const d of document.querySelectorAll('div')) {
+    if (d.children.length < 1 || d.children.length > 30) continue;
+    const rect = d.getBoundingClientRect();
+    const cs   = window.getComputedStyle(d);
+    if (rect.top < window.innerHeight * 0.4) continue;
+    if (rect.height < 20 || rect.width < 80) continue;
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    const text = (d.innerText || '').trim();
+    if (text.length > 3 && text.length < 4000) return d;
+  }
+  return null;
+}
+
+function startZoomScraper() {
+  if (captureActive && captionMode === 'zoom-cc' && captionObserver) return;
+  const container = findZoomContainer();
+  if (container) {
+    captionMode = 'zoom-cc';
+    attachZoomObserver(container);
+    captureActive = true;
+    saveToLiveStorage();
+    return;
+  }
+  captionMode = 'zoom-mic';
+  startWebSpeechSilent();
+  const poll = setInterval(() => {
+    if (!isRecognizing) { clearInterval(poll); return; }
+    const c = findZoomContainer();
+    if (c) { clearInterval(poll); switchToCC('zoom', c); }
+  }, 1500);
+}
+
+function attachZoomObserver(container) {
+  if (captionObserver) captionObserver.disconnect();
+  let lastProcessedText = '';
+  const processedKeys = new Set();
+  let zoomInterimBase    = '';
+  let zoomInterimSpeaker = '';
+
+  function processContainer() {
+    const rawText = container.innerText || '';
+    if (!rawText.trim() || rawText === lastProcessedText) return;
+    lastProcessedText = rawText;
+    const lines = splitBySpeak(rawText);
+    if (!lines.length) return;
+    lines.forEach((line, idx) => {
+      if (!line.text.trim()) return;
+      if (idx < lines.length - 1) {
+        const key = line.speaker + ':::' + line.text;
+        if (!processedKeys.has(key)) {
+          processedKeys.add(key);
+          if (processedKeys.size > 5000) {
+            const first = processedKeys.values().next().value;
+            processedKeys.delete(first);
+          }
+          addFinalSegment(line.speaker, line.text);
+          syncTranscript();
+        }
+      } else {
+        if (line.speaker !== zoomInterimSpeaker) {
+          zoomInterimBase    = '';
+          zoomInterimSpeaker = line.speaker;
+        }
+        interimSegment = {
+          speaker: line.speaker,
+          text:    line.text,
+          fallbackBase: zoomInterimBase,
+          _onCommit: (spk, _delta, fullText) => {
+            processedKeys.add(spk + ':::' + fullText);
+            zoomInterimBase    = fullText;
+            zoomInterimSpeaker = spk;
+          }
+        };
+        scheduleCommitInterim();
+      }
+    });
+    saveToLiveStorage();
+  }
+
+  captionObserver = new MutationObserver(() => {
+    lastActivityTime = Date.now();
+    processContainer();
+  });
+  processContainer();
+  captionObserver.observe(container, { childList: true, subtree: true, characterData: true });
+}
+
+// ════════════════════════════════════════════════════════════════
 // WEB SPEECH API
 // ════════════════════════════════════════════════════════════════
 function startWebSpeech() {
@@ -621,7 +754,7 @@ function doStartRecognition(SR, lang) {
   };
 
   recognition.onend = () => {
-    const micModes = ['webspeech', 'meet-mic', 'teams-mic'];
+    const micModes = ['webspeech', 'meet-mic', 'teams-mic', 'zoom-mic'];
     if (isRecognizing && micModes.includes(captionMode)) {
       setTimeout(() => {
         if (isRecognizing && micModes.includes(captionMode) && recognition) {
@@ -638,7 +771,7 @@ function startWatchdog() {
   clearInterval(speechWatchdog);
   lastActivityTime = Date.now();
   speechWatchdog = setInterval(() => {
-    if (!isRecognizing || !['webspeech','meet-mic','teams-mic'].includes(captionMode)) return;
+    if (!isRecognizing || !['webspeech','meet-mic','teams-mic','zoom-mic'].includes(captionMode)) return;
     if (Date.now() - lastActivityTime > WATCHDOG_MS) restartWebSpeech();
   }, 3000);
 }
@@ -655,7 +788,8 @@ function switchToCC(platform, container) {
   if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
   captionMode = platform + '-cc';
   if (platform === 'meet') attachMeetObserver(container);
-  else                     attachTeamsObserver(container);
+  else if (platform === 'teams') attachTeamsObserver(container);
+  else if (platform === 'zoom')  attachZoomObserver(container);
   saveToLiveStorage();
 }
 
@@ -675,6 +809,7 @@ function cleanMeetingTitle(raw) {
     .replace(/\s*[-–—|]\s*Google\s*Meet\s*$/i, '')
     .replace(/\s*[-–—|]\s*Microsoft\s*Teams\s*$/i, '')
     .replace(/\s*[-–—|]\s*Teams\s*$/i, '')
+    .replace(/\s*[-–—|]\s*Zoom\s*$/i, '')
     .trim();
   return t || 'Untitled Meeting';
 }
@@ -736,6 +871,7 @@ function startAll() {
     const platform = detectPlatform();
     if      (platform === 'meet')  startMeetScraper();
     else if (platform === 'teams') startTeamsScraper();
+    else if (platform === 'zoom')  startZoomScraper();
     else                           startWebSpeech();
 
     syncTranscript();
@@ -807,7 +943,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     setBadge('', '');
     sendResponse({ ok: true });
   } else if (req.action === 'reload_capture') {
-    const micModes = ['webspeech','meet-mic','teams-mic'];
+    const micModes = ['webspeech','meet-mic','teams-mic','zoom-mic'];
     if (micModes.includes(captionMode)) {
       restartWebSpeech();
     } else if (captionMode === 'meet-cc') {
@@ -825,6 +961,18 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           if (!isRecognizing) { clearInterval(poll); return; }
           const c2 = findTeamsContainer();
           if (c2) { clearInterval(poll); switchToCC('teams', c2); }
+        }, 1000);
+      }
+    } else if (captionMode === 'zoom-cc') {
+      if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+      const c = findZoomContainer();
+      if (c) attachZoomObserver(c);
+      else {
+        captionMode = 'zoom-mic'; startWebSpeechSilent();
+        const poll = setInterval(() => {
+          if (!isRecognizing) { clearInterval(poll); return; }
+          const c2 = findZoomContainer();
+          if (c2) { clearInterval(poll); switchToCC('zoom', c2); }
         }, 1000);
       }
     }
@@ -846,6 +994,9 @@ function isMeetingUrl(url) {
     if (u.hostname.includes('teams.microsoft.com') || u.hostname.includes('teams.live.com')) {
       return /meetup-join|meetingjoin|\/meet\//i.test(u.href);
     }
+    if (u.hostname.includes('app.zoom.us') || u.hostname.includes('zoom.us')) {
+      return /\/wc\/|\/j\//i.test(u.pathname);
+    }
   } catch(_) {}
   return false;
 }
@@ -854,6 +1005,10 @@ function meetingKey(url) {
   try {
     const u = new URL(url || location.href);
     if (u.hostname.includes('meet.google.com')) return 'meet:' + u.pathname.split('?')[0];
+    if (u.hostname.includes('app.zoom.us') || u.hostname.includes('zoom.us')) {
+      const zm = u.pathname.match(/\/(?:wc|j)\/(\d+)/);
+      return zm ? 'zoom:' + zm[1] : 'zoom:' + u.pathname.slice(0, 80);
+    }
     const m = u.href.match(/(meetup-join|meetingjoin)[\/=]([^&?#\/]+)/i);
     if (m) return 'teams:' + m[2].slice(0, 80);
     return u.hostname + ':' + u.pathname.slice(0, 80);
@@ -863,7 +1018,7 @@ function meetingKey(url) {
 function startStandbyCapture() {
   if (captureActive || !isMeetingUrl(location.href)) return;
   const platform = detectPlatform();
-  if (platform !== 'meet' && platform !== 'teams') return;
+  if (platform !== 'meet' && platform !== 'teams' && platform !== 'zoom') return;
 
   clearInterval(standbyPollTimer);
   const startedAt = Date.now();
@@ -872,14 +1027,19 @@ function startStandbyCapture() {
       clearInterval(standbyPollTimer); standbyPollTimer = null;
       return;
     }
-    const c = platform === 'meet' ? findMeetContainer() : findTeamsContainer();
+    const c = platform === 'meet' ? findMeetContainer()
+            : platform === 'teams' ? findTeamsContainer()
+            : findZoomContainer();
     if (!c) return;
     if (platform === 'meet') {
       captionMode = 'meet-cc';
       attachMeetObserver(c);
-    } else {
+    } else if (platform === 'teams') {
       captionMode = 'teams-cc';
       attachTeamsObserver(c);
+    } else {
+      captionMode = 'zoom-cc';
+      attachZoomObserver(c);
     }
     captureActive = true;
     setBadge('●', '#fbbc04');

@@ -33,6 +33,10 @@ const ICO = {
     '<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
     '<circle cx="5.5" cy="5" r="2"/><path d="M2 12.5a3.5 3.5 0 0 1 7 0"/>' +
     '<circle cx="11" cy="6" r="1.6"/><path d="M9 12.5a3 3 0 0 1 5.5-1.2"/></svg>',
+  zoom:
+    '<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<rect x="1.5" y="4" width="9" height="8" rx="1.5"/>' +
+    '<path d="M10.5 7l4-2.5v7l-4-2.5z"/></svg>',
   mic:
     '<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
     '<rect x="6" y="2" width="4" height="7.5" rx="2"/>' +
@@ -52,6 +56,10 @@ function meetingKeyFromUrl(url) {
   try {
     const u = new URL(url);
     if (u.hostname.includes('meet.google.com')) return 'meet:' + u.pathname.split('?')[0];
+    if (u.hostname.includes('app.zoom.us') || u.hostname.includes('zoom.us')) {
+      const zm = u.pathname.match(/\/(?:wc|j)\/(\d+)/);
+      return zm ? 'zoom:' + zm[1] : 'zoom:' + u.pathname.slice(0, 80);
+    }
     const m = u.href.match(/(meetup-join|meetingjoin)[\/=]([^&?#\/]+)/i);
     if (m) return 'teams:' + m[2].slice(0, 80);
     return u.hostname + ':' + u.pathname.slice(0, 80);
@@ -430,6 +438,8 @@ function renderPlatformInfo(captionMode) {
     'meet-mic':  { text: 'Google Meet', cls: 'badge-meet',  ico: ICO.meet,  cc: 'off' },
     'teams-cc':  { text: 'Teams',       cls: 'badge-teams', ico: ICO.teams, cc: 'on'  },
     'teams-mic': { text: 'Teams',       cls: 'badge-teams', ico: ICO.teams, cc: 'off' },
+    'zoom-cc':   { text: 'Zoom',        cls: 'badge-zoom',  ico: ICO.zoom,  cc: 'on'  },
+    'zoom-mic':  { text: 'Zoom',        cls: 'badge-zoom',  ico: ICO.zoom,  cc: 'off' },
     'webspeech': { text: 'Mic',         cls: 'badge-mic',   ico: ICO.mic,   cc: null  },
   };
   const info = modeMap[captionMode];
@@ -492,7 +502,7 @@ function loadState() {
 
     if (!currentTabUrl || currentTabUrl.startsWith('chrome://') || currentTabUrl.startsWith('chrome-extension://')) {
       showInactiveView();
-      document.getElementById('errorMsg').textContent = 'Mở Google Meet hoặc Teams để bắt đầu.';
+      document.getElementById('errorMsg').textContent = 'Mở Google Meet, Teams hoặc Zoom để bắt đầu.';
       return;
     }
 
@@ -703,7 +713,7 @@ document.getElementById('dlScriptBtn').addEventListener('click', () => {
     if (!text) return;
     const now      = new Date();
     const mode     = data?.captionMode || 'Meeting';
-    const platform = mode.includes('meet') ? 'GoogleMeet' : mode.includes('teams') ? 'Teams' : 'Meeting';
+    const platform = mode.includes('meet') ? 'GoogleMeet' : mode.includes('teams') ? 'Teams' : mode.includes('zoom') ? 'Zoom' : 'Meeting';
     const date     = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}`;
     const time     = `${pad(now.getHours())}${pad(now.getMinutes())}`;
     const header   = [
@@ -1102,9 +1112,11 @@ function renderHistory() {
       const d = new Date(entry.date);
       const dateStr = `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
       const platformLabel = entry.platform === 'meet' ? 'Google Meet'
-                          : entry.platform === 'teams' ? 'Teams' : 'Meeting';
+                          : entry.platform === 'teams' ? 'Teams'
+                          : entry.platform === 'zoom' ? 'Zoom' : 'Meeting';
       const platformCls = entry.platform === 'meet' ? 'hp-meet'
-                        : entry.platform === 'teams' ? 'hp-teams' : 'hp-other';
+                        : entry.platform === 'teams' ? 'hp-teams'
+                        : entry.platform === 'zoom' ? 'hp-zoom' : 'hp-other';
       return `<div class="history-item" data-idx="${idx}">
           <div class="history-item-header">
             <span class="history-title" title="${escHtml(entry.title)}">${escHtml(entry.title)}</span>
