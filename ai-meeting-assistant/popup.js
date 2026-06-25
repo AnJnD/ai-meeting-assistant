@@ -1060,6 +1060,7 @@ function saveToHistory() {
 
       const entry = {
         id: mk + '_' + Date.now(),
+        mk,
         title,
         date: Date.now(),
         transcript,
@@ -1070,8 +1071,19 @@ function saveToHistory() {
       chrome.storage.local.get([HISTORY_KEY], hr => {
         let history = hr?.[HISTORY_KEY] || [];
         history = history.filter(e => Date.now() - e.date < HISTORY_TTL_MS);
-        history.unshift(entry);
-        if (history.length > HISTORY_MAX) history = history.slice(0, HISTORY_MAX);
+        // Content script auto-saves this meeting during the session —
+        // replace that entry instead of adding a duplicate
+        const idx = history.findIndex(e => e.mk === mk &&
+          (e.transcript === transcript || transcript.startsWith(e.transcript) || e.transcript.startsWith(transcript)));
+        if (idx >= 0) {
+          entry.id = history[idx].id;
+          if (history[idx].transcript.length > transcript.length) entry.transcript = history[idx].transcript;
+          if (!entry.minutes) entry.minutes = history[idx].minutes || '';
+          history[idx] = entry;
+        } else {
+          history.unshift(entry);
+          if (history.length > HISTORY_MAX) history = history.slice(0, HISTORY_MAX);
+        }
         chrome.storage.local.set({ [HISTORY_KEY]: history }, resolve);
       });
     });

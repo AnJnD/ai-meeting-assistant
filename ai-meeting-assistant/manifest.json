@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Meeting Assistant",
-  "version": "4.0",
+  "version": "4.1",
   "description": "Real-time Japanese meeting assistant with speaker diarization and standby capture.",
   "permissions": [
     "activeTab",
@@ -23,6 +23,7 @@
   },
   "action": {
     "default_popup": "popup.html",
+    "default_title": "AI Meeting Assistant 4.1",
     "default_icon": {
       "16":  "icons/icon-16.png",
       "32":  "icons/icon-32.png",

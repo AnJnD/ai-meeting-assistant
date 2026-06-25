@@ -41,6 +41,11 @@ const BUFFER_MAX_AGE_MS   = 2 * 60 * 60 * 1000;
 const BUFFER_MAX_CHARS    = 500 * 1024;
 const STORAGE_PREFIX      = 'mt_buf:';
 const LIVE_PREFIX         = 'mt_live:';
+const GIJI_PREFIX         = 'mt_giji:';
+const HISTORY_KEY         = 'mt_history';
+const HISTORY_MAX         = 3;
+const HISTORY_TTL_MS      = 7 * 24 * 60 * 60 * 1000;
+const HISTORY_MIN_CHARS   = 20;
 
 // ── Platform detection ──────────────────────────────────────────
 function detectPlatform() {
@@ -139,8 +144,8 @@ function extractMeetFallbackSpeaker(text) {
     if (!isMeetUIText(spk) && spk.split(/\s+/).length <= 5)
       return { speaker: spk, text: mColon[2].trim() };
   }
-  // Pattern 3: Latin name (with optional prefix/suffix parens) before content
-  const mLatin = text.match(/^((?:[\(（][^\)）]{1,20}[\)）]\s+)?[A-Z][a-zA-Z\.\-]+(?:\s+[A-Z][a-zA-Z\.\-]*){0,4}(?:\s*[\(（][^\)）]{1,40}[\)）])?)\s+/);
+  // Pattern 3: Latin/Vietnamese name (with optional prefix/suffix parens) before content
+  const mLatin = text.match(/^((?:[\(（][^\)）]{1,20}[\)）]\s+)?\p{Lu}[\p{L}\.\-']+(?:\s+\p{Lu}[\p{L}\.\-']*){1,4}(?:\s*[\(（][^\)）]{1,40}[\)）])?)\s+/u);
   if (mLatin) {
     const spk = mLatin[1].trim()
       .replace(/^[\(（][^\)）]{1,20}[\)）]\s+/, '')
@@ -153,8 +158,8 @@ function extractMeetFallbackSpeaker(text) {
     const spk = mJaName[1].trim().replace(/\s*[\(（][^\)）]{1,40}[\)）]$/, '');
     if (spk && !isMeetUIText(spk)) return { speaker: spk, text: text.slice(mJaName[0].length).trim() };
   }
-  // Pattern 5: Katakana-only name (e.g. タナカ ハルキ or タナカハルキ)
-  const mKata = text.match(/^([ァ-ヶー]{2,8}(?:[\s　][ァ-ヶー]{2,8})?)\s+/);
+  // Pattern 5: Katakana-only name (e.g. タナカ ハルキ, ジョン・スミス or タナカハルキ)
+  const mKata = text.match(/^([ァ-ヶー]{2,8}(?:[\s　・][ァ-ヶー]{2,8})?)\s+/);
   if (mKata) {
     const spk = mKata[1].trim();
     if (spk.length >= 4 && !isMeetUIText(spk)) return { speaker: spk, text: text.slice(mKata[0].length).trim() };
@@ -388,6 +393,59 @@ function findTeamsContainer() {
   return null;
 }
 
+// Strip "(prefix) Name (suffix)" decorations from a display name
+function cleanSpeakerDisplayName(name) {
+  return (name || '')
+    .replace(/^[\(（][^\)）]{1,20}[\)）]\s+/, '')
+    .replace(/\s*[\(（][^\)）]{1,40}[\)）]$/, '')
+    .trim();
+}
+
+// Teams renders each caption as a message block where the author and the
+// caption text live in separate data-tid elements — read them directly
+// instead of guessing speaker names from raw innerText.
+function readTeamsStructuredCaptions(container) {
+  const items = [];
+  // FluentUI slot classes (fui-ChatMessageCompact__body, __content...) also
+  // contain "ChatMessageCompact" — keep only the outermost block, and emit
+  // at most one item per caption-text node.
+  let msgs = Array.from(container.querySelectorAll(
+    '.fui-ChatMessageCompact, [data-tid="closed-caption-message"], [class*="ChatMessageCompact"]'
+  ));
+  msgs = msgs.filter(m => !msgs.some(o => o !== m && o.contains(m)));
+  const seenTextNodes = new Set();
+  msgs.forEach(msg => {
+    const textEl = msg.querySelector('[data-tid="closed-caption-text"]');
+    if (!textEl || seenTextNodes.has(textEl)) return;
+    seenTextNodes.add(textEl);
+    const text = (textEl.innerText || '').trim();
+    if (!text || isMeetUIText(text)) return;
+    const author = cleanSpeakerDisplayName(
+      msg.querySelector('[data-tid="author"]')?.innerText
+    );
+    // node = block identity, so a repeated identical utterance ("はい" twice)
+    // in a new block is not deduped away
+    items.push({ speaker: author || 'Speaker', text, node: textEl });
+  });
+  if (items.length) return items;
+
+  // Variant DOM: caption-text nodes without ChatMessageCompact wrappers —
+  // walk up to the block that holds exactly this one caption and its author
+  container.querySelectorAll('[data-tid="closed-caption-text"]').forEach(tn => {
+    const text = (tn.innerText || '').trim();
+    if (!text || isMeetUIText(text)) return;
+    let author = '';
+    let p = tn.parentElement;
+    for (let depth = 0; p && p !== container && depth < 5; depth++, p = p.parentElement) {
+      if (p.querySelectorAll('[data-tid="closed-caption-text"]').length > 1) break;
+      const a = p.querySelector('[data-tid="author"]');
+      if (a) { author = cleanSpeakerDisplayName(a.innerText); break; }
+    }
+    items.push({ speaker: author || 'Speaker', text, node: tn });
+  });
+  return items;
+}
+
 function startTeamsScraper() {
   if (captureActive && captionMode === 'teams-cc' && captionObserver) return;
   const container = findTeamsContainer();
@@ -411,19 +469,47 @@ function attachTeamsObserver(container) {
   if (captionObserver) captionObserver.disconnect();
   let lastProcessedText = '';
   const processedKeys = new Set();
+  const committedNodes    = new WeakSet(); // structured path: dedup by block identity
   let teamsInterimBase    = ''; // delta tracking for last (growing) speaker block
   let teamsInterimSpeaker = ''; // to detect speaker change → reset base
+  let teamsInterimNode    = null; // structured path: detect a NEW block from the same speaker
 
   function processContainer() {
-    const rawText = container.innerText || '';
-    if (!rawText.trim() || rawText === lastProcessedText) return;
-    lastProcessedText = rawText;
-    const lines = splitBySpeak(rawText);
+    // Primary: structured DOM (reliable speaker separation)
+    let lines = readTeamsStructuredCaptions(container);
+    if (lines.length) {
+      const sig = lines.map(l => l.speaker + '>' + l.text).join('\n');
+      if (sig === lastProcessedText) return;
+      lastProcessedText = sig;
+    } else {
+      // Fallback: raw innerText + name heuristics
+      const rawText = container.innerText || '';
+      if (!rawText.trim() || rawText === lastProcessedText) return;
+      lastProcessedText = rawText;
+      lines = splitBySpeak(rawText);
+    }
     if (!lines.length) return;
     lines.forEach((line, idx) => {
       if (!line.text.trim()) return;
       if (isMeetUIText(line.text)) return;
       if (idx < lines.length - 1) {
+        if (line.node) {
+          // Structured path: dedup by block identity, so a repeated identical
+          // utterance ("はい" said twice in two blocks) is kept both times
+          if (committedNodes.has(line.node)) return;
+          committedNodes.add(line.node);
+          let textToCommit = line.text;
+          if (line.node === teamsInterimNode && teamsInterimBase && line.text.startsWith(teamsInterimBase)) {
+            textToCommit = line.text.slice(teamsInterimBase.length).trim();
+            teamsInterimBase = '';
+          }
+          if (textToCommit) {
+            addFinalSegment(line.speaker, textToCommit);
+            syncTranscript();
+          }
+          return;
+        }
+        // Fallback path (raw innerText): dedup by speaker+text key
         const key = line.speaker + ':::' + line.text;
         if (!processedKeys.has(key)) {
           processedKeys.add(key);
@@ -431,22 +517,34 @@ function attachTeamsObserver(container) {
             const first = processedKeys.values().next().value;
             processedKeys.delete(first);
           }
-          addFinalSegment(line.speaker, line.text);
-          syncTranscript();
+          // If this was the growing interim block and part of it was already
+          // committed mid-utterance, only commit the remaining delta
+          let textToCommit = line.text;
+          if (line.speaker === teamsInterimSpeaker && teamsInterimBase && line.text.startsWith(teamsInterimBase)) {
+            textToCommit = line.text.slice(teamsInterimBase.length).trim();
+            teamsInterimBase = '';
+          }
+          if (textToCommit) {
+            addFinalSegment(line.speaker, textToCommit);
+            syncTranscript();
+          }
         }
       } else {
-        // Speaker changed → reset cumulative base
-        if (line.speaker !== teamsInterimSpeaker) {
+        // Speaker changed, or same speaker opened a NEW block → reset base
+        if (line.speaker !== teamsInterimSpeaker ||
+            (line.node && teamsInterimNode && line.node !== teamsInterimNode)) {
           teamsInterimBase    = '';
           teamsInterimSpeaker = line.speaker;
         }
+        if (line.node) teamsInterimNode = line.node;
         interimSegment = {
           speaker: line.speaker,
           text:    line.text,
           fallbackBase: teamsInterimBase,
           _onCommit: (spk, _delta, fullText) => {
             // Prevent double-commit when this line later becomes non-last
-            processedKeys.add(spk + ':::' + fullText);
+            // (structured path relies on committedNodes + base instead of keys)
+            if (!line.node) processedKeys.add(spk + ':::' + fullText);
             teamsInterimBase    = fullText;
             teamsInterimSpeaker = spk;
           }
@@ -472,12 +570,14 @@ function looksLikeSpeakerName(line) {
   if (isMeetUIText(t)) return false;
   // Ends with sentence punctuation → likely content, not a name
   if (/[。、！？!?,.。]$/.test(t)) return false;
-  // Latin name: optional prefix (xxx), 1-5 capitalized words (last word can be single char e.g. "A"), optional suffix
-  if (/^(?:[\(（][^\)）]{1,20}[\)）]\s+)?[A-Z][a-zA-Z\.\-]+(?:\s+[A-Z][a-zA-Z\.\-]*){0,4}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
+  // Latin/Vietnamese name (Unicode-aware): optional prefix (xxx), 2-5 capitalized words
+  // (last word can be single char e.g. "A"), optional suffix. Requires ≥2 words so a
+  // lone capitalized caption word isn't mistaken for a name.
+  if (/^(?:[\(（][^\)）]{1,20}[\)）]\s+)?\p{Lu}[\p{L}\.\-']+(?:\s+\p{Lu}[\p{L}\.\-']*){1,4}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/u.test(t)) return true;
   // Japanese kanji name: 2-4 kanji + space + 1-6 kanji/katakana (+ optional suffix)
   if (/^[々一-鿿]{2,4}[\s　][々一-鿿ァ-ヶー]{1,6}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
-  // Full katakana name: with space or 5+ chars
-  if (/^[ァ-ヶー]{2,8}[\s　][ァ-ヶー]{2,8}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
+  // Full katakana name: with space/・ separator, or 5+ chars
+  if (/^[ァ-ヶー]{2,8}[\s　・][ァ-ヶー]{2,8}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
   if (/^[ァ-ヶー]{5,14}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
   // Korean name
   if (/^[가-힯]{2,4}[\s　]?[가-힯]{1,4}$/.test(t)) return true;
@@ -524,7 +624,7 @@ function splitBySpeak(raw) {
   const text = raw.replace(/\n+/g, ' ').trim();
   if (!text) return [];
 
-  const speakerPattern = /(?:^|(?<=\s))((?:[\(（][^\)）]{1,20}[\)）]\s+)?[A-Z][a-zA-Z,\.\-_]+(?:\s+[A-Z][a-zA-Z,\.\-_]*){0,3}(?:\s*[\(（][^\)）]{1,40}[\)）])?(?:\/[A-Za-z0-9_\.]+)?|[々一-鿿]{2,4}[\s　][々一-鿿ァ-ヶー]{1,6}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[ァ-ヶー]{2,8}[\s　][ァ-ヶー]{2,8}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[ァ-ヶー]{5,14}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[가-힯]{2,4}[\s　][가-힯]{1,4}|[가-힯]{3,6})\s+(?=[^\s])/g;
+  const speakerPattern = /(?:^|(?<=\s))((?:[\(（][^\)）]{1,20}[\)）]\s+)?\p{Lu}[\p{L},\.\-_']+(?:\s+\p{Lu}[\p{L},\.\-_']*){1,3}(?:\s*[\(（][^\)）]{1,40}[\)）])?(?:\/[A-Za-z0-9_\.]+)?|[々一-鿿]{2,4}[\s　][々一-鿿ァ-ヶー]{1,6}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[ァ-ヶー]{2,8}[\s　・][ァ-ヶー]{2,8}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[ァ-ヶー]{5,14}(?:\s*[\(（][^\)）]{1,40}[\)）])?|[가-힯]{2,4}[\s　][가-힯]{1,4}|[가-힯]{3,6})\s+(?=[^\s])/gu;
 
   const splits = [];
   let match;
@@ -650,8 +750,16 @@ function attachZoomObserver(container) {
             const first = processedKeys.values().next().value;
             processedKeys.delete(first);
           }
-          addFinalSegment(line.speaker, line.text);
-          syncTranscript();
+          // Commit only the delta if part of this block was already committed
+          let textToCommit = line.text;
+          if (line.speaker === zoomInterimSpeaker && zoomInterimBase && line.text.startsWith(zoomInterimBase)) {
+            textToCommit = line.text.slice(zoomInterimBase.length).trim();
+            zoomInterimBase = '';
+          }
+          if (textToCommit) {
+            addFinalSegment(line.speaker, textToCommit);
+            syncTranscript();
+          }
         }
       } else {
         if (line.speaker !== zoomInterimSpeaker) {
@@ -900,7 +1008,9 @@ function stopAll() {
   if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
   captureActive = false;
   isProcessing = false;
-  persistBuffer(meetingKey(location.href));
+  const key = meetingKey(location.href);
+  persistBuffer(key);
+  upsertHistory(key);
   setBadge('', '');
   saveToLiveStorage();
 }
@@ -1069,7 +1179,10 @@ function watchUrlChanges() {
     currentUrl = location.href;
 
     if (oldKey !== newKey) {
-      if (captureActive && !overlayActive) persistBuffer(oldKey);
+      // Always persist + save to history before wiping buffers — leaving the
+      // meeting mid-recording must not lose the transcript (active or standby)
+      persistBuffer(oldKey);
+      upsertHistory(oldKey);
       resetBuffersInMemory();
       stopStandbyCapture();
     }
@@ -1097,7 +1210,9 @@ function startAutosave() {
   clearInterval(autosaveTimer);
   autosaveTimer = setInterval(() => {
     if (!captureActive && !overlayActive) return;
-    persistBuffer(meetingKey(location.href));
+    const key = meetingKey(location.href);
+    persistBuffer(key);
+    upsertHistory(key);
   }, AUTOSAVE_MS);
 }
 
@@ -1112,6 +1227,52 @@ function persistBuffer(key) {
   try {
     chrome.storage.local.set({
       [STORAGE_PREFIX + key]: { text, speakers: [...savedSpeakers], savedAt: Date.now() }
+    });
+  } catch(_) {}
+}
+
+// ── History auto-save ─────────────────────────────────────────────
+// Upsert the current session into mt_history on every autosave/stop/leave,
+// so the transcript survives even if the user closes the meeting without
+// pressing "Kết thúc" in the popup. savedTranscript only ever grows by
+// appending, so prefix comparison identifies "same session" reliably.
+function sameSessionTranscript(a, b) {
+  return !!a && !!b && (a === b || a.startsWith(b) || b.startsWith(a));
+}
+
+function upsertHistory(key, title) {
+  let transcript = (savedTranscript || '').trim();
+  if (!transcript || transcript.length < HISTORY_MIN_CHARS) return;
+  // Cap entry size so 3 history entries can't blow the storage quota
+  const capped = transcript.length > BUFFER_MAX_CHARS;
+  if (capped) transcript = transcript.slice(-BUFFER_MAX_CHARS);
+  const gijiKey = GIJI_PREFIX + key;
+  try {
+    chrome.storage.local.get([HISTORY_KEY, gijiKey], r => {
+      const giji    = r?.[gijiKey];
+      const minutes = typeof giji === 'string' ? giji : (giji?.text || '');
+      let history   = (r?.[HISTORY_KEY] || []).filter(e => Date.now() - e.date < HISTORY_TTL_MS);
+      let idx  = history.findIndex(e => e.mk === key && sameSessionTranscript(e.transcript, transcript));
+      // Capped transcript is a sliding window — prefix match no longer holds,
+      // fall back to matching by meeting key alone
+      if (idx < 0 && capped) idx = history.findIndex(e => e.mk === key);
+      const prev = idx >= 0 ? history[idx] : null;
+      const entry = {
+        id:         prev ? prev.id : key + '_' + Date.now(),
+        mk:         key,
+        title:      title || cleanMeetingTitle(document.title),
+        date:       Date.now(),
+        transcript: (!capped && prev && prev.transcript.length > transcript.length) ? prev.transcript : transcript,
+        minutes:    minutes || (prev?.minutes || ''),
+        platform:   detectPlatform()
+      };
+      if (prev) {
+        history[idx] = entry;
+      } else {
+        history.unshift(entry);
+        if (history.length > HISTORY_MAX) history = history.slice(0, HISTORY_MAX);
+      }
+      chrome.storage.local.set({ [HISTORY_KEY]: history }, () => { void chrome.runtime.lastError; });
     });
   } catch(_) {}
 }
@@ -1155,6 +1316,13 @@ function rebuildSegmentsFromSaved() {
   }
   syncTranscript();
 }
+
+// ── Page unload — best-effort save (autosave is the 15s safety net) ──
+window.addEventListener('pagehide', () => {
+  const key = meetingKey(location.href);
+  persistBuffer(key);
+  upsertHistory(key);
+});
 
 // ── Bootstrap ───────────────────────────────────────────────────
 (function bootstrap() {
