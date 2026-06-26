@@ -1,4 +1,4 @@
-// background.js v6.0.0 — Gemini + OpenAI, popup-based UI
+// background.js v6.0.0 — Gemini + OpenAI + DeepSeek, popup-based UI
 
 let cachedGeminiModel = null;
 let cachedGeminiModelExpiry = 0;
@@ -13,11 +13,51 @@ const OPENAI_MAX_OUTPUT = {
   reply:    1024,
   gijiroku: 2000
 };
+const DEEPSEEK_MAX_OUTPUT = {
+  summary:  2048,
+  reply:    1024,
+  gijiroku: 2000
+};
 
 const GIJIROKU_CHAR_LIMIT = {
-  gemini: 3000,
-  openai: 3000
+  gemini:   3000,
+  openai:   3000,
+  deepseek: 3000
 };
+
+// Thứ tự dự phòng cố định khi failover (provider chính sẽ được ưu tiên chèn lên đầu)
+const PROVIDER_ORDER = ['gemini', 'openai', 'deepseek'];
+
+// Chọn API key theo provider đang dùng
+function pickApiKey(provider, cfg) {
+  if (provider === 'openai')   return cfg.openaiApiKey;
+  if (provider === 'deepseek') return cfg.deepseekApiKey;
+  return cfg.geminiApiKey;
+}
+
+// Điều phối: gọi đúng hàm theo provider
+function callProvider(provider, prompt, apiKey, mode) {
+  if (provider === 'openai')   return callOpenAI(prompt, apiKey, mode);
+  if (provider === 'deepseek') return callDeepSeek(prompt, apiKey, mode);
+  return callGemini(prompt, apiKey, mode);
+}
+
+// Xây chuỗi provider để thử lần lượt.
+// - failover tắt: chỉ [provider chính]
+// - failover bật: [provider chính, ...các provider khác đã lưu key] (provider chính trước)
+// Chỉ thêm provider có key, không trùng lặp.
+function buildProviderChain(primary, cfg, failover) {
+  const chain = [];
+  const add = (p) => {
+    const apiKey = pickApiKey(p, cfg);
+    if (apiKey && !chain.some(c => c.provider === p)) chain.push({ provider: p, apiKey });
+  };
+  add(primary);
+  if (failover) PROVIDER_ORDER.forEach(add);
+  return chain;
+}
+
+const PROVIDER_LABEL = { gemini: 'Gemini', openai: 'OpenAI', deepseek: 'DeepSeek' };
 
 const MAX_TRANSCRIPT_CHARS = 30000;
 const API_TIMEOUT_MS = 30000; // 30s timeout cho mọi API call
@@ -89,9 +129,7 @@ ${safeText}`;
     const speakerList = (meta?.speakers || []).join('、') || '（不明）';
     const lineCount   = safeText.split('\n').length;
     const isTruncated = safeText.includes('lược bỏ');
-    const charLimit   = provider === 'openai'
-      ? GIJIROKU_CHAR_LIMIT.openai
-      : GIJIROKU_CHAR_LIMIT.gemini;
+    const charLimit   = GIJIROKU_CHAR_LIMIT[provider] || GIJIROKU_CHAR_LIMIT.gemini;
 
     return `あなたは日本企業で10年以上の経験を持つ優秀なビジネス秘書です。以下の会議トランスクリプト（${lineCount}行）をもとに、日本のビジネス標準に準拠した正式な議事録を作成してください。
 
@@ -208,7 +246,7 @@ setTabIconGray(null);
 // Gray icon on meeting tab load (before content script sends badge)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete' || !tab.url) return;
-  if (/^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|app\.zoom\.us|zoom\.us)\//.test(tab.url)) {
+  if (/^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|([a-z0-9-]+\.)?zoom\.us)\//.test(tab.url)) {
     setTabIconGray(tabId);
   }
 });
@@ -220,7 +258,7 @@ chrome.commands?.onCommand.addListener(async (command) => {
     if (!tab?.id || !tab.url) return;
     if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) return;
 
-    const hostMatches = /^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|app\.zoom\.us|zoom\.us)\//.test(tab.url);
+    const hostMatches = /^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|([a-z0-9-]+\.)?zoom\.us)\//.test(tab.url);
     if (!hostMatches) return;
 
     const send = (msg) => new Promise(resolve =>
@@ -235,10 +273,10 @@ chrome.commands?.onCommand.addListener(async (command) => {
       if (status?.active) await send({ action: 'stop' });
       else {
         // Need API key before starting
-        const cfg = await chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey']);
+        const cfg = await chrome.storage.sync.get(['aiProvider', 'aiFailover', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey']);
         const provider = cfg.aiProvider || 'gemini';
-        const key = provider === 'openai' ? cfg.openaiApiKey : cfg.geminiApiKey;
-        if (!key) return; // silent — user needs to open popup
+        const chain = buildProviderChain(provider, cfg, !!cfg.aiFailover);
+        if (chain.length === 0) return; // silent — user needs to open popup
         const first = await send({ action: 'start' });
         // If content script wasn't loaded, inject then retry once
         if (!first) {
@@ -280,9 +318,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Test API key — gọi minimal prompt để verify + trả về model info
   if (request.action === 'test_api_key') {
-    chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey'], async (cfg) => {
+    chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], async (cfg) => {
       const provider = cfg.aiProvider || 'gemini';
-      const apiKey   = provider === 'openai' ? cfg.openaiApiKey : cfg.geminiApiKey;
+      const apiKey   = pickApiKey(provider, cfg);
       if (!apiKey) { sendResponse({ ok: false, error: 'Chưa có API key' }); return; }
       try {
         let modelInfo = null;
@@ -292,6 +330,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         const text = provider === 'openai'
           ? await callOpenAI('Reply with exactly the word: OK', apiKey, 'summary')
+          : provider === 'deepseek'
+          ? await callDeepSeek('Reply with exactly the word: OK', apiKey, 'summary')
           : await callGemini('Reply with exactly the word: OK', apiKey, 'summary');
         sendResponse({ ok: true, preview: text.slice(0, 60), modelInfo });
       } catch (err) {
@@ -309,27 +349,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'ai_request') {
-    chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey'], async (cfg) => {
+    chrome.storage.sync.get(['aiProvider', 'aiFailover', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], async (cfg) => {
       const provider = cfg.aiProvider || 'gemini';
-      const apiKey   = provider === 'openai' ? cfg.openaiApiKey : cfg.geminiApiKey;
+      const chain    = buildProviderChain(provider, cfg, !!cfg.aiFailover);
 
-      if (!apiKey) {
+      if (chain.length === 0) {
         sendResponse({ success: false, error: 'API key chưa được cài. Mở Settings trong popup.' });
         return;
       }
 
-      const prompt = buildPrompt(request.text, request.mode, request.meta, provider);
-
-      try {
-        const text = provider === 'openai'
-          ? await callOpenAI(prompt, apiKey, request.mode)
-          : await callGemini(prompt, apiKey, request.mode);
-        const data = {};
-        data[request.mode] = text;
-        sendResponse({ success: true, data });
-      } catch (err) {
-        sendResponse({ success: false, error: err.message });
+      // Thử lần lượt theo chuỗi; lỗi bất kỳ → chuyển sang provider kế tiếp (failover trên mọi lỗi)
+      let lastError = null;
+      for (let i = 0; i < chain.length; i++) {
+        const { provider: p, apiKey } = chain[i];
+        const prompt = buildPrompt(request.text, request.mode, request.meta, p);
+        try {
+          const text = await callProvider(p, prompt, apiKey, request.mode);
+          const data = {};
+          data[request.mode] = text;
+          sendResponse({ success: true, data, usedProvider: p, failedOver: i > 0 });
+          return;
+        } catch (err) {
+          lastError = err;
+          // còn provider dự phòng → thử tiếp; hết → trả lỗi cuối cùng
+        }
       }
+
+      const tried = chain.map(c => PROVIDER_LABEL[c.provider] || c.provider).join(' → ');
+      const suffix = chain.length > 1 ? ` (đã thử: ${tried})` : '';
+      sendResponse({ success: false, error: (lastError?.message || 'Tất cả API đều lỗi.') + suffix });
     });
     return true;
   }
@@ -376,6 +424,51 @@ function friendlyOpenAIError(status, msg) {
   if (status === 401) return `OpenAI API key không hợp lệ (HTTP 401).`;
   if (status === 403) return `OpenAI: Không có quyền truy cập (HTTP 403).`;
   return `Lỗi OpenAI (HTTP ${status}): ${msg || 'Unknown'}`;
+}
+
+// ── DeepSeek ─────────────────────────────────────────────────────
+// API tương thích OpenAI — dùng model mới nhất deepseek-v4-flash
+async function callDeepSeek(prompt, apiKey, mode) {
+  const maxTokens = DEEPSEEK_MAX_OUTPUT[mode] || 2048;
+
+  let response;
+  try {
+    response = await fetchWithTimeout('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.4,
+        max_tokens: maxTokens
+      })
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('DeepSeek không phản hồi sau 30 giây. Thử lại.');
+    throw new Error('Lỗi kết nối mạng đến DeepSeek.');
+  }
+
+  if (!response.ok) {
+    let msg = '';
+    try { const e = await response.json(); msg = e?.error?.message || ''; } catch (_) {}
+    throw new Error(friendlyDeepSeekError(response.status, msg));
+  }
+
+  const data = await response.json();
+  const text = (data.choices?.[0]?.message?.content || '').trim();
+  if (!text) throw new Error('DeepSeek trả về kết quả rỗng.');
+  return text;
+}
+
+function friendlyDeepSeekError(status, msg) {
+  if (status === 429) return `DeepSeek quota hết (HTTP 429). Kiểm tra: platform.deepseek.com`;
+  if (status === 401) return `DeepSeek API key không hợp lệ (HTTP 401).`;
+  if (status === 402) return `DeepSeek: Tài khoản hết số dư (HTTP 402). Nạp thêm tại platform.deepseek.com`;
+  if (status === 403) return `DeepSeek: Không có quyền truy cập (HTTP 403).`;
+  return `Lỗi DeepSeek (HTTP ${status}): ${msg || 'Unknown'}`;
 }
 
 // ── Gemini ───────────────────────────────────────────────────────

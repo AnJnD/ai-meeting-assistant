@@ -530,6 +530,14 @@
       gap: 5px;
       align-items: flex-start;
     }
+    .failover-row {
+      display: flex; align-items: flex-start; gap: 8px;
+      margin: 10px 0; padding: 9px 10px;
+      background: #f8f9fa; border: 1px solid #e8eaed; border-radius: 6px;
+    }
+    .failover-row input { margin-top: 1px; width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
+    .failover-row label { margin: 0; cursor: pointer; font-size: 12px; color: #3c4043; }
+    .failover-row label .sub { display: block; font-size: 10px; color: #80868b; margin-top: 3px; line-height: 1.45; }
     .note svg { flex-shrink: 0; margin-top: 1px; width: 12px; height: 12px; }
 
     /* ── History section ── */
@@ -903,7 +911,16 @@
       <select id="providerSelect">
         <option value="gemini">Google Gemini</option>
         <option value="openai">OpenAI</option>
+        <option value="deepseek">DeepSeek</option>
       </select>
+
+      <div class="failover-row">
+        <input type="checkbox" id="failoverToggle">
+        <label for="failoverToggle">
+          Tự động chuyển API khi lỗi (Failover)
+          <span class="sub">Thử provider chính trước; nếu lỗi sẽ tự chuyển sang các provider khác đã lưu key (Gemini → OpenAI → DeepSeek) để tránh gián đoạn.</span>
+        </label>
+      </div>
 
       <div id="gemini-settings">
         <label>Gemini API Key</label>
@@ -960,6 +977,35 @@
             <path d="M7 11l-.7.7a2.5 2.5 0 0 1-3.5-3.5L4 7"/>
           </svg>
           <span><b>platform.openai.com</b><br>Model: gpt-4o-mini</span>
+        </div>
+      </div>
+
+      <div id="deepseek-settings" style="display:none">
+        <label>DeepSeek API Key</label>
+        <div class="row">
+          <input type="password" id="deepseekKeyInput" placeholder="sk-...">
+          <button class="btn-icon" id="toggleDeepseekKey" title="Hiện/ẩn key">
+            <svg class="ico ico-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1.5 8s2.3-5 6.5-5 6.5 5 6.5 5-2.3 5-6.5 5-6.5-5-6.5-5z"/>
+              <circle cx="8" cy="8" r="2.2"/>
+            </svg>
+          </button>
+          <button class="btn-green" id="saveDeepseekBtn">Save</button>
+        </div>
+        <button class="btn-test" id="testDeepseekBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 1.5L2.5 3.5v4c0 3.3 2.2 6 5.5 6.5 3.3-.5 5.5-3.2 5.5-6.5v-4L8 1.5z"/>
+            <path d="M6 8l1.4 1.4L10.4 6.4"/>
+          </svg>
+          Kiểm tra API Key
+        </button>
+        <div class="msg" id="deepseekKeyStatus"></div>
+        <div class="note">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6.5 9.5L9.5 6.5"/><path d="M9 5l.7-.7a2.5 2.5 0 0 1 3.5 3.5L12 9"/>
+            <path d="M7 11l-.7.7a2.5 2.5 0 0 1-3.5-3.5L4 7"/>
+          </svg>
+          <span><b>platform.deepseek.com</b><br>Model: deepseek-v4-flash (mới nhất)</span>
         </div>
       </div>
 

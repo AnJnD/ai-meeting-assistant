@@ -675,36 +675,88 @@ const ZOOM_SELECTORS = {
   ],
 };
 
+// Bật log chẩn đoán: localStorage.setItem('mt_debug','1')
+function mtDebug(...args) {
+  try { if (localStorage.getItem('mt_debug')) console.debug('[MeetingAI]', ...args); } catch (_) {}
+}
+
+// Thu thập tất cả "root" để tìm caption: document trên cùng + các iframe same-origin
+// (đệ quy) + các open shadow root. Zoom web client nhúng phòng họp trong iframe nên
+// caption không nằm ở document trên cùng.
+function collectSearchRoots() {
+  const roots = [];
+  const seen = new Set();
+  const visit = (root) => {
+    if (!root || seen.has(root)) return;
+    seen.add(root);
+    roots.push(root);
+    let els;
+    try { els = root.querySelectorAll('*'); } catch (_) { return; }
+    for (const el of els) {
+      if (el.shadowRoot) visit(el.shadowRoot);                       // open shadow DOM
+      if (el.tagName === 'IFRAME') {                                  // iframe same-origin
+        try { if (el.contentDocument) visit(el.contentDocument); } catch (_) {}
+      }
+    }
+  };
+  visit(document);
+  return roots;
+}
+
 function findZoomContainer() {
-  for (const s of ZOOM_SELECTORS.container) {
-    try { const e = document.querySelector(s); if (e) return e; } catch(_) {}
-  }
-  for (const el of document.querySelectorAll('[aria-label]')) {
-    const label = (el.getAttribute('aria-label') || '').toLowerCase();
-    if (label.includes('caption') || label.includes('transcript') || label.includes('字幕')) {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 50 && rect.height > 20) return el;
+  const roots = collectSearchRoots();
+  mtDebug('zoom: search roots =', roots.length);
+
+  // Strategy 1: selector list
+  for (const root of roots) {
+    for (const s of ZOOM_SELECTORS.container) {
+      try {
+        const e = root.querySelector(s);
+        if (e) { mtDebug('zoom: hit selector', s, '.' + e.className); return e; }
+      } catch (_) {}
     }
   }
-  for (const el of document.querySelectorAll('[aria-live="polite"],[aria-live="assertive"]')) {
-    const text = (el.innerText || '').trim();
-    if (text.length < 3 || text.length > 4000) continue;
-    const rect = el.getBoundingClientRect();
-    const cs   = window.getComputedStyle(el);
-    if (rect.width < 80 || rect.height < 15) continue;
-    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-    return el;
+  // Strategy 2: aria-label chứa caption/transcript/字幕
+  for (const root of roots) {
+    let els; try { els = root.querySelectorAll('[aria-label]'); } catch (_) { continue; }
+    for (const el of els) {
+      const label = (el.getAttribute('aria-label') || '').toLowerCase();
+      if (label.includes('caption') || label.includes('transcript') || label.includes('字幕')) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 50 && rect.height > 20) { mtDebug('zoom: hit aria-label', label); return el; }
+      }
+    }
   }
-  for (const d of document.querySelectorAll('div')) {
-    if (d.children.length < 1 || d.children.length > 30) continue;
-    const rect = d.getBoundingClientRect();
-    const cs   = window.getComputedStyle(d);
-    if (rect.top < window.innerHeight * 0.4) continue;
-    if (rect.height < 20 || rect.width < 80) continue;
-    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-    const text = (d.innerText || '').trim();
-    if (text.length > 3 && text.length < 4000) return d;
+  // Strategy 3: vùng aria-live
+  for (const root of roots) {
+    let els; try { els = root.querySelectorAll('[aria-live="polite"],[aria-live="assertive"]'); } catch (_) { continue; }
+    for (const el of els) {
+      const text = (el.innerText || '').trim();
+      if (text.length < 3 || text.length > 4000) continue;
+      const win  = el.ownerDocument.defaultView || window;
+      const rect = el.getBoundingClientRect();
+      const cs   = win.getComputedStyle(el);
+      if (rect.width < 80 || rect.height < 15) continue;
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      mtDebug('zoom: hit aria-live', text.slice(0, 40)); return el;
+    }
   }
+  // Strategy 4: heuristic — div ở nửa dưới màn hình có nội dung
+  for (const root of roots) {
+    let els; try { els = root.querySelectorAll('div'); } catch (_) { continue; }
+    for (const d of els) {
+      if (d.children.length < 1 || d.children.length > 30) continue;
+      const win  = d.ownerDocument.defaultView || window;
+      const rect = d.getBoundingClientRect();
+      const cs   = win.getComputedStyle(d);
+      if (rect.top < win.innerHeight * 0.4) continue;
+      if (rect.height < 20 || rect.width < 80) continue;
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      const text = (d.innerText || '').trim();
+      if (text.length > 3 && text.length < 4000) { mtDebug('zoom: hit heuristic', text.slice(0, 40)); return d; }
+    }
+  }
+  mtDebug('zoom: no container found');
   return null;
 }
 
@@ -739,6 +791,7 @@ function attachZoomObserver(container) {
     if (!rawText.trim() || rawText === lastProcessedText) return;
     lastProcessedText = rawText;
     const lines = splitBySpeak(rawText);
+    mtDebug('zoom: rawText', rawText.length, 'chars →', lines.length, 'lines');
     if (!lines.length) return;
     lines.forEach((line, idx) => {
       if (!line.text.trim()) return;

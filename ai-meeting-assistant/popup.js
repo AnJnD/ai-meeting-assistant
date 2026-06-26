@@ -123,15 +123,35 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ── Provider switcher ─────────────────────────────────────────────
 const providerSelect = document.getElementById('providerSelect');
 
+const PROVIDER_LABEL = {
+  gemini:   'Google Gemini — Flash (latest)',
+  openai:   'OpenAI — gpt-4o-mini',
+  deepseek: 'DeepSeek — deepseek-v4-flash'
+};
+const FAILOVER_ORDER = ['gemini', 'openai', 'deepseek'];
+
 function updateProviderUI(provider) {
-  document.getElementById('gemini-settings').style.display = provider === 'gemini' ? 'block' : 'none';
-  document.getElementById('openai-settings').style.display = provider === 'openai'  ? 'block' : 'none';
+  document.getElementById('gemini-settings').style.display   = provider === 'gemini'   ? 'block' : 'none';
+  document.getElementById('openai-settings').style.display   = provider === 'openai'   ? 'block' : 'none';
+  document.getElementById('deepseek-settings').style.display = provider === 'deepseek' ? 'block' : 'none';
   const d    = document.getElementById('provider-display');
   const span = d?.querySelector('span');
-  if (span) {
-    span.innerHTML = provider === 'gemini'
-      ? 'Provider: <b>Google Gemini</b> — Flash (latest)'
-      : 'Provider: <b>OpenAI</b> — gpt-4o-mini';
+  if (!span) return;
+
+  const failover = document.getElementById('failoverToggle')?.checked;
+  if (failover) {
+    // Liệt kê chuỗi: provider chính trước, rồi các provider khác đã lưu key
+    chrome.storage.sync.get(['geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], r => {
+      const has = { gemini: !!r.geminiApiKey, openai: !!r.openaiApiKey, deepseek: !!r.deepseekApiKey };
+      const names = { gemini: 'Gemini', openai: 'OpenAI', deepseek: 'DeepSeek' };
+      const chain = [provider, ...FAILOVER_ORDER.filter(p => p !== provider)]
+        .filter(p => has[p])
+        .map(p => names[p]);
+      const label = chain.length ? chain.join(' → ') : names[provider];
+      span.innerHTML = 'Provider (Failover): <b>' + label + '</b>';
+    });
+  } else {
+    span.innerHTML = 'Provider: <b>' + (PROVIDER_LABEL[provider] || PROVIDER_LABEL.gemini) + '</b>';
   }
 }
 
@@ -141,10 +161,18 @@ providerSelect.addEventListener('change', () => {
   updateProviderUI(p);
 });
 
+// ── Failover toggle ───────────────────────────────────────────────
+const failoverToggle = document.getElementById('failoverToggle');
+failoverToggle.addEventListener('change', () => {
+  chrome.storage.sync.set({ aiFailover: failoverToggle.checked });
+  updateProviderUI(providerSelect.value);
+});
+
 // ── Load saved settings ───────────────────────────────────────────
-chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey'], r => {
+chrome.storage.sync.get(['aiProvider', 'aiFailover', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], r => {
   const provider = r.aiProvider || 'gemini';
   providerSelect.value = provider;
+  failoverToggle.checked = !!r.aiFailover;
   updateProviderUI(provider);
   if (r.geminiApiKey) {
     document.getElementById('geminiKeyInput').value = r.geminiApiKey;
@@ -153,6 +181,10 @@ chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey'], r => {
   if (r.openaiApiKey) {
     document.getElementById('openaiKeyInput').value = r.openaiApiKey;
     setStatus('openaiKeyStatus', 'Key đã lưu', 'ok');
+  }
+  if (r.deepseekApiKey) {
+    document.getElementById('deepseekKeyInput').value = r.deepseekApiKey;
+    setStatus('deepseekKeyStatus', 'Key đã lưu', 'ok');
   }
 });
 
@@ -175,6 +207,15 @@ document.getElementById('saveOpenaiBtn').addEventListener('click', () => {
   });
 });
 
+document.getElementById('saveDeepseekBtn').addEventListener('click', () => {
+  const key = document.getElementById('deepseekKeyInput').value.trim();
+  if (!key) { setStatus('deepseekKeyStatus', 'Hãy nhập API key', 'err'); return; }
+  chrome.storage.sync.set({ deepseekApiKey: key, aiProvider: 'deepseek' }, () => {
+    setStatus('deepseekKeyStatus', 'Đã lưu!', 'ok');
+    updateProviderUI('deepseek');
+  });
+});
+
 // ── Show/Hide key toggles ─────────────────────────────────────────
 function bindToggle(btnId, inputId) {
   document.getElementById(btnId).addEventListener('click', () => {
@@ -186,6 +227,7 @@ function bindToggle(btnId, inputId) {
 }
 bindToggle('toggleGeminiKey', 'geminiKeyInput');
 bindToggle('toggleOpenaiKey', 'openaiKeyInput');
+bindToggle('toggleDeepseekKey', 'deepseekKeyInput');
 
 // ── Test API Key ──────────────────────────────────────────────────
 function bindTestKey(btnId, statusId) {
@@ -210,6 +252,7 @@ function bindTestKey(btnId, statusId) {
 }
 bindTestKey('testGeminiBtn', 'geminiKeyStatus');
 bindTestKey('testOpenaiBtn', 'openaiKeyStatus');
+bindTestKey('testDeepseekBtn', 'deepseekKeyStatus');
 
 // ═════════════════════════════════════════════════════════════════
 // CONTROL TAB — state
@@ -592,12 +635,19 @@ function sendToTab(message, onSuccess, onError, opts = {}) {
   });
 }
 
+// Có key dùng được không? Failover bật → bất kỳ provider nào có key; tắt → đúng provider chính.
+function hasUsableKey(r) {
+  const provider = r.aiProvider || 'gemini';
+  if (r.aiFailover) return !!(r.geminiApiKey || r.openaiApiKey || r.deepseekApiKey);
+  if (provider === 'openai')   return !!r.openaiApiKey;
+  if (provider === 'deepseek') return !!r.deepseekApiKey;
+  return !!r.geminiApiKey;
+}
+
 // ── Start ─────────────────────────────────────────────────────────
 document.getElementById('startBtn').addEventListener('click', () => {
-  chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey'], r => {
-    const provider = r.aiProvider || 'gemini';
-    const hasKey   = provider === 'gemini' ? !!r.geminiApiKey : !!r.openaiApiKey;
-    if (!hasKey) {
+  chrome.storage.sync.get(['aiProvider', 'aiFailover', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], r => {
+    if (!hasUsableKey(r)) {
       document.getElementById('errorMsg').textContent = 'Vào Settings và lưu AI API Key trước!';
       return;
     }
@@ -621,10 +671,8 @@ document.getElementById('stopBtn').addEventListener('click', () => {
 
 // ── Tiếp tục ─────────────────────────────────────────────────────
 document.getElementById('resumeBtn').addEventListener('click', () => {
-  chrome.storage.sync.get(['aiProvider', 'geminiApiKey', 'openaiApiKey'], r => {
-    const provider = r.aiProvider || 'gemini';
-    const hasKey   = provider === 'gemini' ? !!r.geminiApiKey : !!r.openaiApiKey;
-    if (!hasKey) {
+  chrome.storage.sync.get(['aiProvider', 'aiFailover', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], r => {
+    if (!hasUsableKey(r)) {
       document.getElementById('errorMsg').textContent = 'Vào Settings và lưu AI API Key trước!';
       return;
     }
