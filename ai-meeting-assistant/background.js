@@ -546,15 +546,20 @@ async function callGeminiAPI(prompt, apiKey, model, mode) {
     }
   };
 
-  // gemini-2.5+ có thinking mode mặc định — phải tắt nếu set temperature
+  requestBody.generationConfig.temperature = 0.3;
+
+  // Giảm/tắt "thinking" để đỡ tốn token và giảm độ trễ.
+  // - Gemini 3.x: dùng thinkingLevel ('low'). KHÔNG hỗ trợ thinkingBudget →
+  //   nếu gửi thinkingBudget sẽ bị HTTP 400 "invalid argument".
+  // - Gemini 2.5.x (Flash): dùng thinkingBudget = 0 để tắt hẳn thinking.
+  // - Cũ hơn (2.0, …): không có thinking mode, không set gì thêm.
   const versionMatch = model.match(/(\d+)\.(\d+)/);
   const majorVersion = versionMatch ? Number(versionMatch[1]) : 0;
   const minorVersion = versionMatch ? Number(versionMatch[2]) : 0;
-  if (majorVersion >= 2 && minorVersion >= 5 || majorVersion >= 3) {
+  if (majorVersion >= 3) {
+    requestBody.generationConfig.thinkingConfig = { thinkingLevel: 'low' };
+  } else if (majorVersion === 2 && minorVersion >= 5) {
     requestBody.generationConfig.thinkingConfig = { thinkingBudget: 0 };
-    requestBody.generationConfig.temperature = 0.3;
-  } else {
-    requestBody.generationConfig.temperature = 0.3;
   }
 
   let response;
