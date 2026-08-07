@@ -4,19 +4,22 @@ let cachedGeminiModel = null;
 let cachedGeminiModelExpiry = 0;
 
 const GEMINI_MAX_OUTPUT = {
-  summary:  2048,
-  reply:    1024,
-  gijiroku: 2000   // ~3000 Japanese chars ≈ 2–3 A4 pages
+  summary:   2048,
+  reply:     1024,
+  gijiroku:  2000,  // ~3000 Japanese chars ≈ 2–3 A4 pages
+  translate: 2048   // live translate: mỗi lần chỉ dịch một lô dòng ngắn
 };
 const OPENAI_MAX_OUTPUT = {
-  summary:  2048,
-  reply:    1024,
-  gijiroku: 2000
+  summary:   2048,
+  reply:     1024,
+  gijiroku:  2000,
+  translate: 2048
 };
 const DEEPSEEK_MAX_OUTPUT = {
-  summary:  2048,
-  reply:    1024,
-  gijiroku: 2000
+  summary:   2048,
+  reply:     1024,
+  gijiroku:  2000,
+  translate: 2048
 };
 
 const GIJIROKU_CHAR_LIMIT = {
@@ -119,6 +122,29 @@ Based on the transcript below, write a suggested reply in Japanese (敬語).
 - Output ONLY the Japanese reply — no JSON, no markdown, no labels
 
 Transcript:
+${safeText}`;
+  }
+
+  // Live Translate — dịch từng lô dòng transcript sang tiếng Việt.
+  // Input đã được popup đánh số sẵn theo dạng "#1: <text>" để dễ ghép lại 1:1.
+  if (mode === 'translate') {
+    const count = meta?.count || safeText.split('\n').filter(Boolean).length;
+    const lang  = meta?.targetLang || 'Vietnamese';
+
+    return `You are a professional real-time interpreter for a Vietnamese speaker in a business meeting.
+
+Translate every numbered item below into natural ${lang}.
+
+Rules:
+- Output EXACTLY ${count} line(s), one line per item, in the same order, and nothing else
+- Each line MUST use this format: #<number>: <${lang} translation>
+- Source may be Japanese, English or another language. If an item is already ${lang}, output it unchanged
+- Natural, concise, business register
+- Keep proper nouns, product names, numbers and units as they are
+- Do NOT add explanations, notes, romaji, pronunciation, or the original text
+- Do NOT merge, split, skip or renumber items. Items can be sentence fragments — translate them as they are
+
+Items:
 ${safeText}`;
   }
 

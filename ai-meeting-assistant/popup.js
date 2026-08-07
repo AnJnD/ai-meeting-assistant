@@ -49,6 +49,7 @@ const LIVE_PREFIX      = 'mt_live:';
 const BUF_PREFIX       = 'mt_buf:';
 const GIJIROKU_PREFIX  = 'mt_giji:';
 const TIMER_PREFIX     = 'mt_timer:';
+const TRANS_PREFIX     = 'mt_trans:';
 const GIJIROKU_TTL_MS  = 2 * 60 * 60 * 1000;
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -262,6 +263,7 @@ let currentTabUrl      = null;
 let currentLiveKey     = null;
 let currentBufKey      = null;
 let currentGijirokuKey = null;
+let currentTransKey    = null;
 let timerKey           = null;
 let isSessionActive    = false;
 let isSessionStopped   = false;
@@ -509,10 +511,22 @@ function renderPlatformInfo(captionMode) {
 }
 
 // ── Apply live data to UI ─────────────────────────────────────────
+// LƯU Ý: renderTranscript() giữ nguyên hoàn toàn. Phần Translate chỉ ĐỌC lại
+// dữ liệu đã có (data.segments / data.interim), không can thiệp luồng transcript.
 function applyLiveData(data) {
   if (!data) return;
   renderTranscript(data);
   renderPlatformInfo(data.captionMode);
+
+  // ── Translate: mirror dữ liệu transcript ──
+  lastSegments    = data.segments   || [];
+  lastInterim     = data.interim    || null;
+  lastSpeakerMap  = data.speakerMap || {};
+  lastCaptionMode = data.captionMode || '';
+  reconcileTrans();
+  if (activeSubTab === 'translate') renderTranslate();
+  else                              renderTransStatus();
+  if (transEnabled) schedulePump();
 }
 
 // ── Restore minutes from storage ──────────────────────────────────
@@ -553,12 +567,16 @@ function loadState() {
     currentLiveKey     = LIVE_PREFIX     + mk;
     currentBufKey      = BUF_PREFIX      + mk;
     currentGijirokuKey = GIJIROKU_PREFIX + mk;
+    currentTransKey    = TRANS_PREFIX    + mk;
     timerKey           = TIMER_PREFIX    + mk;
 
-    chrome.storage.local.get([currentLiveKey, timerKey], r => {
+    chrome.storage.local.get([currentLiveKey, timerKey, currentTransKey], r => {
       const data      = r?.[currentLiveKey];
       const timerData = r?.[timerKey];
       const hasPausedSession = timerData && (timerData.elapsed > 0 || timerData.startTime > 0);
+
+      // Nạp cache bản dịch TRƯỚC khi applyLiveData() để không dịch lại từ đầu
+      hydrateTrans(r?.[currentTransKey]);
 
       if (data?.active) {
         showActiveView();
@@ -703,6 +721,11 @@ document.getElementById('newSessionBtn').addEventListener('click', () => {
     minutesText = '';
     if (currentGijirokuKey) chrome.storage.local.remove([currentGijirokuKey]);
 
+    // Dọn bản dịch của phiên này
+    resetTransState();
+    if (currentTransKey) chrome.storage.local.remove([currentTransKey]);
+    setSubTab('transcript');
+
     const doReset = () => {
       // silent: cleanup op — if content script unreachable, fall back to local clear
       sendToTab({ action: 'reset_saved' }, () => {
@@ -773,6 +796,349 @@ document.getElementById('dlScriptBtn').addEventListener('click', () => {
     ].join('\n');
     downloadText(header, `Script_${platform}_${date}_${time}.txt`);
   });
+});
+
+// ═════════════════════════════════════════════════════════════════
+// LIVE TRANSLATE — dịch trực tiếp nội dung tab Transcript sang tiếng Việt
+//
+// Nguồn dữ liệu: data.segments của tab Transcript (KHÔNG chạm vào logic bắt
+// caption trong content.js). Mỗi segment được dịch theo "delta": phần text mới
+// thêm vào segment sẽ được dịch rồi nối tiếp vào bản dịch cũ — nên không bao
+// giờ dịch lại phần đã dịch. Kết quả cache theo meeting trong storage.local.
+// ═════════════════════════════════════════════════════════════════
+
+const TRANS_BATCH    = 12;   // số dòng gửi mỗi lần gọi API
+const TRANS_MAX_FAIL = 3;    // số lần lỗi liên tiếp thì dừng, chờ user bấm "Dịch lại"
+const TRANS_MAX_TRY  = 2;    // 1 dòng thử tối đa 2 lần, sau đó giữ nguyên bản gốc
+const PUMP_DEBOUNCE  = 700;
+
+let activeSubTab    = 'transcript';   // 'transcript' | 'translate'
+let transEnabled    = false;          // bật sau lần đầu user mở tab Translate
+let transEntries    = [];             // [{ speaker, src, dst, pending, tries }] — song song segments
+let lastSegments    = [];
+let lastInterim     = null;
+let lastSpeakerMap  = {};
+let lastCaptionMode = '';
+let transRunning    = false;
+let transFailCount  = 0;
+let transError      = '';
+let transRetryTimer = null;
+let transSaveTimer  = null;
+let transPumpTimer  = null;
+
+// ── Nạp cache từ storage ─────────────────────────────────────────
+function hydrateTrans(stored) {
+  if (!stored) return;
+  if (Date.now() - (stored.savedAt || 0) > GIJIROKU_TTL_MS) {
+    if (currentTransKey) chrome.storage.local.remove([currentTransKey]);
+    return;
+  }
+  transEnabled = !!stored.enabled;
+  transEntries = (stored.entries || []).map(e => ({
+    speaker: e.speaker || 'Speaker',
+    src:     e.src || '',
+    dst:     e.dst || '',
+    pending: '',
+    tries:   0
+  }));
+}
+
+function saveTransSoon() {
+  if (!currentTransKey) return;
+  clearTimeout(transSaveTimer);
+  transSaveTimer = setTimeout(() => {
+    const entries = transEntries.map(e => ({ speaker: e.speaker, src: e.src, dst: e.dst }));
+    try {
+      chrome.storage.local.set({
+        [currentTransKey]: { enabled: transEnabled, entries, savedAt: Date.now() }
+      }, () => { void chrome.runtime.lastError; });
+    } catch(_) {}
+  }, 800);
+}
+
+function resetTransState() {
+  clearTimeout(transSaveTimer);
+  clearTimeout(transRetryTimer);
+  clearTimeout(transPumpTimer);
+  transEntries   = [];
+  transRunning   = false;
+  transFailCount = 0;
+  transError     = '';
+  transEnabled   = false;
+  const box = document.getElementById('translateBox');
+  if (box) box.innerHTML = '<span class="placeholder">Chưa có nội dung để dịch...</span>';
+  renderTransStatus();
+}
+
+// ── Đồng bộ transEntries với segments hiện tại ────────────────────
+// segments[i].text chỉ dài thêm (content.js nối text vào segment cuối cùng),
+// nên so sánh prefix là đủ để biết phần nào chưa dịch.
+function reconcileTrans() {
+  if (transEntries.length > lastSegments.length) transEntries.length = lastSegments.length;
+  for (let i = 0; i < lastSegments.length; i++) {
+    const seg = lastSegments[i];
+    const e   = transEntries[i];
+    if (!e || e.speaker !== seg.speaker || !seg.text.startsWith(e.src)) {
+      // Entry mới, hoặc segment đã thay đổi (vd: sau khi Xóa transcript) → dịch lại
+      transEntries[i] = { speaker: seg.speaker, src: '', dst: '', pending: seg.text, tries: 0 };
+    } else {
+      e.pending = seg.text.slice(e.src.length).trim();
+    }
+  }
+}
+
+// ── Gọi AI dịch theo lô ──────────────────────────────────────────
+function schedulePump() {
+  clearTimeout(transPumpTimer);
+  transPumpTimer = setTimeout(pumpTranslate, PUMP_DEBOUNCE);
+}
+
+function pumpTranslate() {
+  if (!transEnabled || transRunning) return;
+  if (transFailCount >= TRANS_MAX_FAIL) return;
+
+  const jobs = [];
+  for (let i = 0; i < transEntries.length && jobs.length < TRANS_BATCH; i++) {
+    const e   = transEntries[i];
+    const src = (e.pending || '').trim();
+    // baseSrc/speaker được chụp lại để phát hiện entry đã bị thay đổi khi
+    // response về (vd: user bấm "Xóa transcript" giữa lúc đang chờ API)
+    if (src) jobs.push({ i, src, fullSrc: lastSegments[i]?.text || src, baseSrc: e.src, speaker: e.speaker });
+  }
+  if (!jobs.length) { transError = ''; renderTransStatus(); return; }
+
+  transRunning = true;
+  renderTransStatus();
+
+  const block = jobs.map((j, k) => `#${k + 1}: ${j.src}`).join('\n');
+  chrome.runtime.sendMessage(
+    { action: 'ai_request', mode: 'translate', text: block,
+      meta: { count: jobs.length, targetLang: 'Vietnamese' } },
+    res => {
+      transRunning = false;
+
+      if (chrome.runtime.lastError || !res?.success) {
+        transFailCount++;
+        transError = chrome.runtime.lastError ? 'Lỗi kết nối.' : (res?.error || 'Lỗi dịch.');
+        renderTransStatus();
+        if (transFailCount < TRANS_MAX_FAIL) {
+          clearTimeout(transRetryTimer);
+          transRetryTimer = setTimeout(pumpTranslate, 4000);
+        }
+        return;
+      }
+
+      transFailCount = 0;
+      transError     = '';
+      const parts = parseNumbered(res.data?.translate || '', jobs.length);
+
+      jobs.forEach((j, k) => {
+        const e = transEntries[j.i];
+        // Bỏ kết quả đã lỗi thời: entry bị thay/đổi người nói, hoặc segment
+        // không còn bắt đầu bằng nội dung lúc gửi request
+        if (!e || e.speaker !== j.speaker || e.src !== j.baseSrc) return;
+        if (!(lastSegments[j.i]?.text || '').startsWith(j.fullSrc)) return;
+        const dst = (parts[k] || '').trim();
+        if (dst) {
+          e.dst     = (e.dst ? e.dst + ' ' : '') + dst;
+          e.src     = j.fullSrc;
+          e.pending = '';
+          e.tries   = 0;
+          return;
+        }
+        // AI thiếu dòng này → thử lại; quá số lần thì giữ nguyên bản gốc
+        e.tries = (e.tries || 0) + 1;
+        if (e.tries >= TRANS_MAX_TRY) {
+          e.dst     = (e.dst ? e.dst + ' ' : '') + j.src;
+          e.src     = j.fullSrc;
+          e.pending = '';
+        }
+      });
+
+      // Segment có thể đã dài thêm trong lúc chờ API — tính lại pending để
+      // phần mới nhất không bị kẹt đến lượt cập nhật sau
+      reconcileTrans();
+
+      if (activeSubTab === 'translate') renderTranslate();
+      else                              renderTransStatus();
+      saveTransSoon();
+      pumpTranslate();   // còn dòng chưa dịch → tiếp tục lô sau
+    }
+  );
+}
+
+// Bóc kết quả dạng "#1: ...", "#2: ..." thành mảng n phần tử.
+// Dòng không có số sẽ được nối vào phần tử trước (phòng khi AI xuống dòng).
+function parseNumbered(text, n) {
+  const out = new Array(n).fill('');
+  const got = new Array(n).fill(false);
+  let cur = -1;
+  String(text).split('\n').forEach(line => {
+    const m = line.match(/^\s*#?\s*(\d+)\s*[:.)\-–]\s*(.*)$/);
+    if (m) {
+      const idx = parseInt(m[1], 10) - 1;
+      if (idx >= 0 && idx < n) {
+        cur = idx;
+        got[idx] = true;
+        out[idx] = (m[2] || '').trim();
+        return;
+      }
+    }
+    if (cur >= 0 && line.trim()) out[cur] += (out[cur] ? ' ' : '') + line.trim();
+  });
+  // Chỉ có 1 dòng mà AI trả về thẳng bản dịch không đánh số
+  if (n === 1 && !got[0]) {
+    const plain = String(text).trim();
+    if (plain) out[0] = plain;
+  }
+  return out;
+}
+
+// ── Render tab Translate — trình bày y như tab Transcript ─────────
+function renderTranslate() {
+  const box = document.getElementById('translateBox');
+  if (!box) { renderTransStatus(); return; }
+
+  const rows = transEntries.filter(e => e.dst || e.pending);
+  if (!rows.length && !lastInterim) {
+    box.innerHTML = '<span class="placeholder">Chưa có nội dung để dịch...</span>';
+    renderTransStatus();
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+
+  rows.forEach(e => {
+    const row = document.createElement('div');
+    row.className = 'speaker-line';
+    const badge = document.createElement('span');
+    badge.className = `spk-badge ai-speaker-${colorFor(e.speaker, lastSpeakerMap)}`;
+    badge.textContent = e.speaker + ':';   // tên người nói giữ nguyên, không dịch
+    row.appendChild(badge);
+    if (e.dst) {
+      const txt = document.createElement('span');
+      txt.className = 'tr-text';
+      txt.textContent = ' ' + e.dst;
+      row.appendChild(txt);
+    }
+    if (e.pending) {
+      const wait = document.createElement('span');
+      wait.className = 'tr-wait';
+      wait.textContent = e.dst ? ' (đang dịch...)' : ' đang dịch...';
+      row.appendChild(wait);
+    }
+    frag.appendChild(row);
+  });
+
+  // Câu đang nói (interim) — hiển thị bản gốc, sẽ được dịch khi chốt câu
+  if (lastInterim?.text) {
+    const row = document.createElement('div');
+    row.className = 'speaker-line';
+    const badge = document.createElement('span');
+    badge.className = `spk-badge ai-speaker-${colorFor(lastInterim.speaker, lastSpeakerMap)} spk-interim`;
+    badge.textContent = lastInterim.speaker + ':';
+    const txt = document.createElement('span');
+    txt.className = 'tr-src';
+    txt.textContent = ' ' + lastInterim.text;
+    row.appendChild(badge);
+    row.appendChild(txt);
+    frag.appendChild(row);
+  }
+
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  box.innerHTML = '';
+  box.appendChild(frag);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+
+  renderTransStatus();
+}
+
+function renderTransStatus() {
+  const el = document.getElementById('translateStatus');
+  if (!el) return;
+  const pending = transEntries.filter(e => e.pending).length;
+  el.className = 'tr-status' + (transError ? ' err' : '');
+  el.title     = transError || '';
+  if (transError && transFailCount >= TRANS_MAX_FAIL) el.textContent = '⚠ ' + transError;
+  else if (transError)                                el.textContent = '⚠ Lỗi, đang thử lại...';
+  else if (transRunning || pending)                   el.textContent = 'Đang dịch' + (pending > 1 ? ` (${pending})` : '') + '...';
+  else                                                el.textContent = '';
+}
+
+// ── Chuyển sub-tab Transcript / Translate ─────────────────────────
+function setSubTab(name) {
+  activeSubTab = name;
+  document.querySelectorAll('.sub-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.sub === name);
+  });
+  const isTr = name === 'translate';
+  document.getElementById('transcriptBox').style.display    = isTr ? 'none' : '';
+  document.getElementById('translateBox').style.display     = isTr ? ''     : 'none';
+  document.getElementById('transcriptFooter').style.display = isTr ? 'none' : '';
+  document.getElementById('translateFooter').style.display  = isTr ? ''     : 'none';
+
+  if (isTr) {
+    if (!transEnabled) { transEnabled = true; saveTransSoon(); }
+    transFailCount = 0;
+    transError     = '';
+    reconcileTrans();
+    renderTranslate();
+    pumpTranslate();
+  }
+}
+
+document.querySelectorAll('.sub-tab').forEach(btn => {
+  btn.addEventListener('click', () => setSubTab(btn.dataset.sub));
+});
+
+// ── Dịch lại toàn bộ ─────────────────────────────────────────────
+document.getElementById('retranslateBtn').addEventListener('click', () => {
+  showConfirm('Dịch lại toàn bộ nội dung?', () => {
+    clearTimeout(transRetryTimer);
+    transEntries = transEntries.map(e => ({
+      speaker: e.speaker, src: '', dst: '', pending: '', tries: 0
+    }));
+    transFailCount = 0;
+    transError     = '';
+    reconcileTrans();
+    renderTranslate();
+    pumpTranslate();
+  });
+});
+
+// ── Bản dịch dạng text (dùng cho Copy / Tải) ─────────────────────
+function translateAsText() {
+  return transEntries
+    .filter(e => e.dst)
+    .map(e => `${e.speaker}: ${e.dst}`)
+    .join('\n');
+}
+
+// ── Copy bản dịch ────────────────────────────────────────────────
+document.getElementById('copyTranslateBtn').addEventListener('click', () => {
+  const text = translateAsText().trim();
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => flashBtn('copyTranslateBtn', 'Đã copy'));
+});
+
+// ── Tải bản dịch ─────────────────────────────────────────────────
+document.getElementById('dlTranslateBtn').addEventListener('click', () => {
+  const text = translateAsText().trim();
+  if (!text) return;
+  const now      = new Date();
+  const mode     = lastCaptionMode || 'Meeting';
+  const platform = mode.includes('meet') ? 'GoogleMeet' : mode.includes('teams') ? 'Teams' : mode.includes('zoom') ? 'Zoom' : 'Meeting';
+  const date     = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}`;
+  const time     = `${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const speakers = [...new Set(transEntries.filter(e => e.dst).map(e => e.speaker))];
+  const header   = [
+    '='.repeat(50),
+    `Meeting Translation (Tiếng Việt) — ${platform}`,
+    `Date: ${now.getFullYear()}/${pad(now.getMonth()+1)}/${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
+    `Speakers: ${speakers.join(', ') || 'Unknown'}`,
+    '='.repeat(50), '', text
+  ].join('\n');
+  downloadText(header, `Translate_${platform}_${date}_${time}.txt`);
 });
 
 // ─────────────────────────────────────────────────────────────────

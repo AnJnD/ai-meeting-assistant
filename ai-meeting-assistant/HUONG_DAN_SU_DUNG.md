@@ -87,7 +87,24 @@ Extension cần 1 API key của Google Gemini để AI hoạt động. Cách l�
 | **DL MM** | Tải biên bản họp về máy dạng file .txt |
 | **Xóa** (ở 議事録) | Xóa nội dung biên bản họp vừa tạo |
 
-### 4.5. Tạo biên bản họp (議事録)
+### 4.5. Xem bản dịch tiếng Việt (tab Translate)
+
+Ngay cạnh tab **Transcript** có tab **Translate**. Bấm vào là xem được bản dịch tiếng Việt của đúng những gì đang hiện bên Transcript.
+
+1. Bấm tab **Translate** — lần đầu bấm sẽ dịch toàn bộ nội dung đang có, sau đó tự dịch tiếp mỗi khi có người nói thêm
+2. Trình bày giống hệt bên Transcript: `Tên người nói: nội dung đã dịch`. Tên người nói **giữ nguyên**, không dịch
+3. Câu đang nói dở (chữ xanh in nghiêng) hiển thị bản gốc — dịch ngay khi câu chốt lại
+4. **Copy** / **Tải** dùng y như bên Transcript
+5. **Dịch lại** — dịch lại toàn bộ từ đầu (khi thấy bản dịch chưa vừa ý)
+
+| Điều cần biết | Chi tiết |
+|---------------|----------|
+| Dùng API key nào? | Chính key AI đã cài trong Settings (Gemini / OpenAI / DeepSeek), có cả failover |
+| Popup đóng thì sao? | Việc dịch tạm dừng (Chrome huỷ popup). Mở lại popup sẽ dịch tiếp phần còn thiếu |
+| Có dịch lại phần cũ không? | Không. Bản dịch được cache, chỉ phần lời mới được gửi lên AI |
+| Tốn quota nhiều không? | Gộp tối đa 12 dòng mỗi lần gọi để tiết kiệm |
+
+### 4.6. Tạo biên bản họp (議事録)
 
 1. Để cuộc họp diễn ra — transcript sẽ tự động tích lũy
 2. Khi muốn tạo biên bản, bấm **"Tạo 議事録"**
