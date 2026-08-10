@@ -1,7 +1,7 @@
 // translate-check.mjs — offline verification harness for the Live Translate
-// feature. Loads the REAL translate module out of popup.js into a Node vm
-// sandbox (stubbed chrome/document/timers + a fake AI) so every assertion runs
-// against the actual shipped code, not a re-implementation.
+// feature (v2, chunk-based engine). Loads the REAL translate module out of
+// popup.js into a Node vm sandbox (stubbed chrome/document/timers + a fake AI)
+// so every assertion runs against the actual shipped code.
 //
 // Run: node test/translate-check.mjs
 
@@ -48,16 +48,27 @@ const storageLocal = {
 
 // ───────────────────────── fake AI (background.js stand-in) ─────────────────────────
 // Records every ai_request so the tests can assert what was actually sent.
+//   'ok'     — dịch đủ mọi dòng
+//   'skip2'  — luôn bỏ sót dòng #2
+//   'omit'   — không trả dòng nào
+//   'plain'  — trả text không đánh số
+//   'error'  — API báo lỗi
+//   'dead'   — KHÔNG BAO GIỜ gọi callback (service worker MV3 bị Chrome kill)
+//   'manual' — giữ callback lại để test tự quyết thứ tự trả về
 const aiCalls = [];
-let aiMode = 'ok';       // 'ok' | 'skip2' | 'omit' | 'plain' | 'error'
+const pendingCalls = [];
+let aiMode = 'ok';
 function fakeTranslate(block) {
   const items = block.split('\n').map(l => l.match(/^#(\d+):\s*(.*)$/)).filter(Boolean);
-  if (aiMode === 'plain') return 'VI[' + items[0][2] + ']';   // no numbering at all
-  if (aiMode === 'omit')  return 'Xin lỗi, tôi không thể.';   // never returns any item
+  if (aiMode === 'plain') return 'VI[' + items[0][2] + ']';
+  if (aiMode === 'omit')  return 'Xin lỗi, tôi không thể.';
   return items
     .filter(m => !(aiMode === 'skip2' && m[1] === '2'))
     .map(m => `#${m[1]}: VI[${m[2]}]`)
     .join('\n');
+}
+function okResponse(msg) {
+  return { success: true, data: { translate: fakeTranslate(msg.text) }, usedProvider: 'gemini' };
 }
 const chromeStub = {
   storage: { local: storageLocal, sync: { get(_k, cb) { cb({}); } } },
@@ -65,22 +76,39 @@ const chromeStub = {
     lastError: undefined,
     sendMessage(msg, cb) {
       aiCalls.push(clone(msg));
-      if (aiMode === 'error') { cb({ success: false, error: 'Gemini quota hết (HTTP 429).' }); return; }
-      cb({ success: true, data: { translate: fakeTranslate(msg.text) }, usedProvider: 'gemini' });
+      if (aiMode === 'dead')   { return; }                       // callback không bao giờ chạy
+      if (aiMode === 'manual') { pendingCalls.push({ msg: clone(msg), cb }); return; }
+      if (aiMode === 'error')  { cb({ success: false, error: 'Gemini quota hết (HTTP 429).' }); return; }
+      cb(okResponse(msg));
     },
   },
 };
+// Trả lời một call đang treo trong chế độ 'manual'
+function resolveCall(idx, mode = 'ok') {
+  const entry = pendingCalls[idx];
+  if (!entry || entry.done) return false;
+  entry.done = true;
+  const saved = aiMode; aiMode = mode;
+  entry.cb(mode === 'error' ? { success: false, error: 'lỗi' } : okResponse(entry.msg));
+  aiMode = saved;
+  return true;
+}
 
 // ───────────────────────── controllable timers ─────────────────────────
+// Timer được lưu kèm delay để test chọn được cái nào nổ. Mặc định KHÔNG nổ
+// watchdog (25s) — nếu không thì mọi test dùng chế độ 'manual' sẽ bị watchdog
+// cắt ngang và không kiểm tra được hành vi song song.
 const timeouts = new Map(); let timerSeq = 1;
-function flushTimeouts(rounds = 4) {
+function flushTimeouts(rounds = 4, maxMs = 10000) {
   for (let i = 0; i < rounds; i++) {
-    if (!timeouts.size) return;
-    const entries = [...timeouts.entries()];
-    timeouts.clear();
-    entries.forEach(([, fn]) => fn());
+    const due = [...timeouts.entries()].filter(([, t]) => t.ms <= maxMs);
+    if (!due.length) return;
+    due.forEach(([id]) => timeouts.delete(id));
+    due.forEach(([, t]) => t.fn());
   }
 }
+// Nổ mọi timer, kể cả watchdog — dùng để mô phỏng service worker chết.
+function flushAll(rounds = 4) { flushTimeouts(rounds, Infinity); }
 
 // ───────────────────────── minimal DOM stub ─────────────────────────
 function makeEl(id) {
@@ -88,20 +116,24 @@ function makeEl(id) {
     id,
     style: {}, classList: { _s: new Set(), toggle(c, on) { on ? el.classList._s.add(c) : el.classList._s.delete(c); } },
     className: '', title: '', dataset: {},
-    _kids: [], _html: '', _text: '',
+    _kids: [], _html: '', _text: '', _on: {},
     scrollTop: 0, clientHeight: 200, scrollHeight: 200,
     set innerHTML(v) { el._html = v; el._kids = []; },
     get innerHTML() { return el._html; },
     set textContent(v) { el._text = v; el._kids = []; },
     get textContent() { return el._kids.length ? el._kids.map(k => k.textContent).join('') : el._text; },
-    // DocumentFragment được "flatten" như DOM thật
-    appendChild(c) {
-      if (c.id === 'frag') { c._kids.forEach(k => el._kids.push(k)); c._kids = []; }
-      else el._kids.push(c);
-      el._html = '';
+    appendChild(c) { el._kids.push(c); el._html = ''; return c; },
+    replaceChild(nw, old) {
+      const i = el._kids.indexOf(old);
+      if (i >= 0) el._kids[i] = nw; else el._kids.push(nw);
+      return old;
+    },
+    removeChild(c) {
+      const i = el._kids.indexOf(c);
+      if (i >= 0) el._kids.splice(i, 1);
       return c;
     },
-    addEventListener() {},
+    addEventListener(ev, fn) { el._on[ev] = fn; },
   };
   return el;
 }
@@ -112,6 +144,7 @@ const documentStub = {
   createElement() { return makeEl('dyn'); },
   createDocumentFragment() { return makeEl('frag'); },
 };
+function clickEl(id) { elements[id]?._on?.click?.(); }
 
 // Rendered translate box as plain text lines, e.g. ["田中: VI[はい]"]
 function renderedLines() {
@@ -121,17 +154,17 @@ function renderedLines() {
 }
 
 // ───────────────────────── extract the translate module ─────────────────────────
-const start = popupSrc.indexOf('const TRANS_BATCH');
+const start = popupSrc.indexOf('const TRANS_MAX_CHARS');
 const end   = popupSrc.indexOf('// MEETING MINUTES');
 group('G0 module extraction');
 check('translate module found in popup.js', start > 0 && end > start);
 const moduleSrc = popupSrc.slice(start, end);
 
 const sandbox = {
-  chrome: chromeStub, console, JSON, Date, Math, Array, Set, String, parseInt,
+  chrome: chromeStub, console, JSON, Date, Math, Array, Set, Map, String, Number, parseInt, RegExp, Object,
   document: documentStub,
-  navigator: { clipboard: { writeText: () => ({ then: (f) => f() }) } },
-  setTimeout: (fn) => { const id = timerSeq++; timeouts.set(id, fn); return id; },
+  navigator: { clipboard: { writeText: (t) => { sandbox._lastCopy = t; return { then: (f) => f() }; } } },
+  setTimeout: (fn, ms) => { const id = timerSeq++; timeouts.set(id, { fn, ms: ms || 0 }); return id; },
   clearTimeout: (id) => timeouts.delete(id),
   // deps provided by the rest of popup.js
   GIJIROKU_TTL_MS: 2 * 60 * 60 * 1000,
@@ -145,7 +178,10 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(moduleSrc, sandbox, { filename: 'popup.translate.js' });
 const S = (expr) => vm.runInContext(expr, sandbox);
-const entries = () => JSON.parse(S('JSON.stringify(transEntries)'));
+const segs = () => JSON.parse(S('JSON.stringify(transSegs)'));
+const chunks = () => segs().flatMap(s => s.chunks);
+const dstOf = (i) => segs()[i].chunks.filter(c => c.dst).map(c => c.dst).join(' ');
+const stateCount = (st) => chunks().filter(c => c.state === st).length;
 
 // Feed segments the way applyLiveData() does, then run one full cycle.
 function feed(segments, interim = null) {
@@ -155,10 +191,13 @@ function feed(segments, interim = null) {
 }
 function openTranslateTab() { S('setSubTab("translate")'); flushTimeouts(); }
 function resetAll() {
-  S('resetTransState(); activeSubTab = "transcript"; lastSegments = []; lastInterim = null; transEnabled = false;');
-  timeouts.clear(); aiCalls.length = 0; aiMode = 'ok';
+  S('resetTransState(); activeSubTab = "transcript"; lastSegments = []; lastInterim = null; transEnabled = false; transCache.clear(); transCacheDirty = false; transReqSeq = 0;');
+  timeouts.clear(); aiCalls.length = 0; pendingCalls.length = 0; aiMode = 'ok';
   delete storageData['mt_trans:teams:m1'];
+  delete storageData['mt_trans_cache'];
+  Object.values(elements).forEach(el => { el._kids = []; el._html = ''; });
 }
+const seg = (speaker, text) => ({ speaker, text });
 
 // ═════════════════════ G1: parseNumbered ═════════════════════
 group('G1 parseNumbered — bóc kết quả AI');
@@ -169,12 +208,12 @@ eq('dòng bị wrap nối vào dòng trước', parseNumbered('#1: xin chào\n  
 eq('1 item, AI trả plain text', parseNumbered('Xin chào mọi người', 1), ['Xin chào mọi người']);
 eq('thiếu item → chuỗi rỗng', parseNumbered('#1: xin chào', 2), ['xin chào', '']);
 eq('số ngoài phạm vi bị bỏ qua', parseNumbered('#5: lạc\n#1: đúng', 1), ['đúng']);
-eq('preamble bị bỏ (không có item nào trước #1)', parseNumbered('Here you go:\n#1: xin chào', 1), ['xin chào']);
+eq('preamble bị bỏ', parseNumbered('Here you go:\n#1: xin chào', 1), ['xin chào']);
 
-// ═════════════════════ G2: dịch cơ bản + tên người nói giữ nguyên ═════════════════════
+// ═════════════════════ G2: dịch cơ bản ═════════════════════
 group('G2 dịch cơ bản');
 resetAll();
-feed([{ speaker: 'matsuda', text: 'ありがとうございました。' }]);
+feed([seg('matsuda', 'ありがとうございました。')]);
 eq('chưa mở tab Translate → chưa gọi API', aiCalls.length, 0);
 
 openTranslateTab();
@@ -182,241 +221,378 @@ eq('mở tab Translate → gọi API 1 lần', aiCalls.length, 1);
 eq('mode gửi lên là translate', aiCalls[0].mode, 'translate');
 eq('gửi đúng nội dung đánh số', aiCalls[0].text, '#1: ありがとうございました。');
 eq('meta.count đúng', aiCalls[0].meta.count, 1);
-eq('bản dịch được lưu', entries()[0].dst, 'VI[ありがとうございました。]');
-eq('tên người nói KHÔNG bị dịch', entries()[0].speaker, 'matsuda');
-eq('render giống transcript: "tên: nội dung"', renderedLines(), ['matsuda:' + ' VI[ありがとうございました。]']);
-eq('hết pending', entries()[0].pending, '');
+eq('bản dịch được lưu', dstOf(0), 'VI[ありがとうございました。]');
+eq('tên người nói KHÔNG bị dịch', segs()[0].speaker, 'matsuda');
+eq('render giống transcript', renderedLines(), ['matsuda: VI[ありがとうございました。]']);
+eq('không còn chunk chờ', stateCount('queued') + stateCount('sending'), 0);
+eq('không còn request treo', S('transInflight.size'), 0);
 
-// ═════════════════════ G3: delta — không dịch lại phần đã dịch ═════════════════════
-group('G3 delta translate (segment dài thêm)');
+// ═════════════════════ G3: delta ═════════════════════
+group('G3 delta — không dịch lại phần đã dịch');
 aiCalls.length = 0;
-feed([{ speaker: 'matsuda', text: 'ありがとうございました。 よろしくお願いします。' }]);
+feed([seg('matsuda', 'ありがとうございました。 よろしくお願いします。')]);
 eq('chỉ gửi phần MỚI lên API', aiCalls.map(c => c.text), ['#1: よろしくお願いします。']);
-eq('bản dịch được nối tiếp', entries()[0].dst, 'VI[ありがとうございました。] VI[よろしくお願いします。]');
-eq('src đã đồng bộ toàn bộ segment', entries()[0].src, 'ありがとうございました。 よろしくお願いします。');
+eq('bản dịch nối tiếp', dstOf(0), 'VI[ありがとうございました。] VI[よろしくお願いします。]');
 
 aiCalls.length = 0;
-feed([{ speaker: 'matsuda', text: 'ありがとうございました。 よろしくお願いします。' }]);
+feed([seg('matsuda', 'ありがとうございました。 よろしくお願いします。')]);
 eq('không có gì mới → không gọi API', aiCalls.length, 0);
 
-// người nói mới → segment mới, chỉ dịch segment mới
-aiCalls.length = 0;
-feed([
-  { speaker: 'matsuda', text: 'ありがとうございました。 よろしくお願いします。' },
-  { speaker: 'tanaka',  text: 'はい、承知しました。' },
-]);
-eq('chỉ dịch segment mới', aiCalls.map(c => c.text), ['#1: はい、承知しました。']);
-eq('2 dòng hiển thị', renderedLines().length, 2);
-eq('dòng 2 đúng người nói', renderedLines()[1], 'tanaka: VI[はい、承知しました。]');
-
-// ═════════════════════ G4: gộp lô + interim ═════════════════════
-group('G4 batching + interim');
+// ═════════════════════ G4: watchdog — LỖI ĐƠ CỦA BẢN 4.5 ═════════════════════
+group('G4 watchdog — service worker chết, callback không bao giờ về');
 resetAll();
-const many = Array.from({ length: 20 }, (_, i) => ({ speaker: 'S' + (i % 3), text: 'text' + i }));
-// speaker lặp lại nhưng content.js đã gộp sẵn, ở đây coi như 20 segment riêng
-S('transEnabled = true');
-feed(many);
-eq('lô đầu tối đa TRANS_BATCH=12 dòng', aiCalls[0].text.split('\n').length, 12);
-eq('gọi 2 lô cho 20 dòng', aiCalls.length, 2);
-eq('lô 2 chứa 8 dòng còn lại', aiCalls[1].text.split('\n').length, 8);
-eq('tất cả đều đã dịch', entries().filter(e => e.dst).length, 20);
-eq('không còn pending', entries().filter(e => e.pending).length, 0);
+aiMode = 'dead';
+feed([seg('A', 'これはテストです。')]);
+S('setSubTab("translate")');   // mở tab, chưa cho timer nào nổ
+eq('đã gửi request', aiCalls.length, 1);
+eq('có 1 request đang bay', S('transInflight.size'), 1);
 
-// interim hiển thị bản gốc, KHÔNG gọi API
+flushTimeouts(4);   // mọi timer NGẮN nổ — watchdog 25s thì chưa
+eq('trước watchdog, slot vẫn giữ (đúng như bản 4.5 kẹt mãi)', S('transInflight.size'), 1);
+
+flushAll(1);        // watchdog nổ
+eq('watchdog gỡ slot inflight (không kẹt vĩnh viễn)', S('transInflight.size'), 0);
+check('báo lỗi thay vì đứng im', S('transError') !== '');
+
+// Bản 4.5 dừng ở đây mãi mãi. Bản này phải tự hồi phục:
+aiMode = 'ok';
+aiCalls.length = 0;
+flushTimeouts(4);   // retry timer → pump → gửi lại
+check('tự thử lại sau khi watchdog nổ', aiCalls.length >= 1, 'aiCalls=' + aiCalls.length);
+eq('dịch xong sau khi hồi phục', dstOf(0), 'VI[これはテストです。]');
+eq('sạch hàng đợi', stateCount('queued') + stateCount('sending'), 0);
+
+// API chết hẳn: phải dừng lại và hiện bản gốc, không để dòng nào treo
+resetAll();
+aiMode = 'dead';
+feed([seg('A', 'ずっと無応答です。'), seg('B', 'にど目です。')]);
+S('setSubTab("translate")');
+flushAll(12);
+eq('không còn request treo sau nhiều lần chết', S('transInflight.size'), 0);
+eq('giữ nguyên bản gốc thay vì treo "đang dịch..."', dstOf(0), 'ずっと無応答です。');
+eq('mọi dòng đều thoát trạng thái chờ', stateCount('queued') + stateCount('sending'), 0);
+check('số lần gọi API có trần', aiCalls.length <= 4, 'aiCalls=' + aiCalls.length);
+check('status vẫn báo lỗi cho user', elements['translateStatus'].textContent.includes('⚠'),
+      JSON.stringify(elements['translateStatus'].textContent));
+
+// ═════════════════════ G5: song song + không head-of-line blocking ═════════════════════
+group('G5 lô song song, dòng kẹt không chặn dòng sau');
+resetAll();
+openTranslateTab();          // mở tab trước rồi transcript mới chạy → không có backlog
+aiMode = 'manual';
+const many = [];
+for (let i = 0; i < 100; i++) many.push(seg('S' + (i % 4), `文${i}です。`));
+feed(many);
+eq('chạy tối đa 3 lô song song', pendingCalls.length, 3);
+eq('mỗi lô tối đa 24 dòng', pendingCalls.map(p => p.msg.meta.count), [24, 24, 24]);
+
+// Lô ĐẦU TIÊN cố tình để treo; trả lời lô thứ 2 và 3.
+const before = aiCalls.length;
+resolveCall(1);
+resolveCall(2);
+flushTimeouts(2);
+check('lô sau vẫn được gửi dù lô đầu còn treo', aiCalls.length > before,
+      'trước=' + before + ' sau=' + aiCalls.length);
+check('lô đầu vẫn đang bay', S('transInflight.size') >= 1, 'inflight=' + S('transInflight.size'));
+check('phần sau đã có bản dịch dù dòng đầu kẹt', dstOf(30).startsWith('VI['), 'dst=' + dstOf(30));
+eq('dòng thuộc lô đang kẹt vẫn ở trạng thái đang gửi', segs()[0].chunks[0].state, 'sending');
+
+// ═════════════════════ G6: cache src→dst ═════════════════════
+group('G6 cache — cụm lặp không tốn token');
+resetAll();
+feed([seg('A', 'はい。')]);
+openTranslateTab();
+eq('lần đầu gọi API', aiCalls.length, 1);
+
+aiCalls.length = 0;
+feed([seg('A', 'はい。'), seg('B', 'はい。'), seg('C', 'はい。')]);
+eq('cụm lặp lấy từ cache → 0 call', aiCalls.length, 0);
+eq('vẫn có bản dịch', [dstOf(1), dstOf(2)], ['VI[はい。]', 'VI[はい。]']);
+
+aiCalls.length = 0;
+feed([seg('A', 'はい。'), seg('B', 'はい。'), seg('C', 'はい。'), seg('D', 'ちがいます。')]);
+eq('cụm mới vẫn gọi API', aiCalls.map(c => c.text), ['#1: ちがいます。']);
+
+check('cache được ghi xuống storage', Array.isArray(storageData['mt_trans_cache']),
+      JSON.stringify(storageData['mt_trans_cache'])?.slice(0, 80));
+
+// storage.local.get là bất đồng bộ: cache thường về SAU lần reconcile đầu tiên
+resetAll();
+S('activeSubTab = "translate";');
+feed([seg('A', 'おつかれさまです。')]);   // tab chưa mở → chunk nằm chờ, chưa gọi API
+eq('chunk đang xếp hàng', stateCount('queued'), 1);
+storageData['mt_trans_cache'] = [['おつかれさまです。', 'VI[おつかれさまです。]']];
+S('loadTransCache()');                   // cache về muộn
+eq('cache về muộn vẫn lấp được hàng đợi', dstOf(0), 'VI[おつかれさまです。]');
+eq('không còn dòng nào phải gọi API', stateCount('queued'), 0);
+aiCalls.length = 0;
+openTranslateTab();
+eq('mở tab → không tốn call nào', aiCalls.length, 0);
+
+// ═════════════════════ G7: bỏ qua dòng không cần API ═════════════════════
+group('G7 lọc dòng không cần gọi API');
+resetAll();
 openTranslateTab();
 aiCalls.length = 0;
-feed(many, { speaker: 'tanaka', text: 'えーと、そうですね' });
-eq('interim không kích hoạt gọi API', aiCalls.length, 0);
-eq('interim hiển thị cuối cùng dạng bản gốc', renderedLines().slice(-1), ['tanaka: えーと、そうですね']);
+feed([seg('A', '...'), seg('B', '???'), seg('C', '12345')]);
+eq('dấu câu / số thuần → 0 call', aiCalls.length, 0);
+eq('giữ nguyên nội dung', [dstOf(0), dstOf(2)], ['...', '12345']);
 
-// ═════════════════════ G5: AI thiếu dòng → retry rồi fallback ═════════════════════
-group('G5 AI thiếu dòng');
-// 5a: AI bỏ sót 1 dòng → lô sau dịch lại được
+aiCalls.length = 0;
+feed([seg('A', '...'), seg('B', '???'), seg('C', '12345'), seg('D', 'Vâng, tôi đồng ý.')]);
+eq('câu đã là tiếng Việt → 0 call', aiCalls.length, 0);
+eq('giữ nguyên câu tiếng Việt', dstOf(3), 'Vâng, tôi đồng ý.');
+
+aiCalls.length = 0;
+feed([seg('A', '...'), seg('B', '???'), seg('C', '12345'), seg('D', 'Vâng, tôi đồng ý.'),
+      seg('E', 'Yes I agree with that.')]);
+eq('tiếng Anh KHÔNG bị bỏ qua', aiCalls.map(c => c.text), ['#1: Yes I agree with that.']);
+
+// ═════════════════════ G8: gom lô theo ký tự ═════════════════════
+group('G8 gom lô theo ký tự, không theo số dòng');
 resetAll();
-S('transEnabled = true; activeSubTab = "translate";');
+openTranslateTab();
+aiMode = 'manual';
+const longSegs = [];
+for (let i = 0; i < 40; i++) longSegs.push(seg('S' + i, 'あ'.repeat(150) + `${i}。`));
+feed(longSegs);
+const sizes = pendingCalls.map(p => p.msg.text.length);
+check('mỗi lô không vượt trần ký tự', sizes.every(n => n <= 1400), 'sizes=' + sizes.join(','));
+check('lô gom nhiều dòng chứ không phải 1 dòng/call',
+      pendingCalls.every(p => p.msg.meta.count > 1), 'counts=' + pendingCalls.map(p => p.msg.meta.count).join(','));
+
+// ═════════════════════ G9: transcript bị xóa / đổi giữa chừng ═════════════════════
+group('G9 transcript bị xóa hoặc thay đổi');
+resetAll();
+feed([seg('A', 'おはようございます。')]);
+openTranslateTab();
+eq('dịch xong', dstOf(0), 'VI[おはようございます。]');
+
+feed([]);                       // user bấm "Xóa transcript"
+eq('xóa transcript → sạch bản dịch', segs().length, 0);
+eq('render về placeholder', renderedLines(), []);
+
+aiCalls.length = 0;
+feed([seg('A', 'おはようございます。')]);   // gõ lại đúng nội dung cũ
+eq('dựng lại KHÔNG tốn thêm call (nhờ cache)', aiCalls.length, 0);
+eq('bản dịch lấy lại được', dstOf(0), 'VI[おはようございます。]');
+
+// Kết quả về SAU khi transcript đã đổi vẫn phải được ghi nhận (bản 4.5 vứt đi)
+resetAll();
+aiMode = 'manual';
+feed([seg('A', '古い文です。')]);
+openTranslateTab();
+eq('1 request đang bay', pendingCalls.length, 1);
+S('lastSegments = []; reconcileTrans();');          // transcript bị xóa lúc đang chờ
+resolveCall(0);
+flushTimeouts(2);
+aiMode = 'ok';
+aiCalls.length = 0;
+feed([seg('A', '古い文です。')]);
+eq('kết quả đã trả tiền vẫn vào cache → không gọi lại', aiCalls.length, 0);
+eq('bản dịch dùng lại được', dstOf(0), 'VI[古い文です。]');
+
+// ═════════════════════ G10: AI bỏ sót dòng ═════════════════════
+group('G10 AI bỏ sót dòng — không lặp vô hạn');
+resetAll();
 aiMode = 'skip2';
-feed([
-  { speaker: 'A', text: 'いちばん' },
-  { speaker: 'B', text: 'にばん' },
-]);
-eq('dòng 1 dịch được', entries()[0].dst, 'VI[いちばん]');
-eq('dòng bị sót được dịch ở lô sau', entries()[1].dst, 'VI[にばん]');
-eq('không còn pending (không loop vô hạn)', entries().filter(e => e.pending).length, 0);
+feed([seg('A', 'いち。'), seg('B', 'に。'), seg('C', 'さん。')]);
+openTranslateTab();
+flushTimeouts(8);
+eq('dòng được trả về vẫn dịch đúng', dstOf(0), 'VI[いち。]');
+eq('dòng bị bỏ sót được xếp lại và dịch ở lô sau', dstOf(1), 'VI[に。]');
+eq('không còn chunk chờ', stateCount('queued') + stateCount('sending'), 0);
 check('số lần gọi API có giới hạn', aiCalls.length <= 4, 'aiCalls=' + aiCalls.length);
 
-// 5b: AI không bao giờ trả item nào → sau TRANS_MAX_TRY giữ nguyên bản gốc
+// AI không bao giờ trả dòng nào (nhiều dòng → không rơi vào nhánh plain-text)
 resetAll();
-S('transEnabled = true; activeSubTab = "translate";');
 aiMode = 'omit';
-feed([
-  { speaker: 'A', text: 'いちばん' },
-  { speaker: 'B', text: 'にばん' },
-]);
-eq('fallback: giữ nguyên bản gốc', entries().map(e => e.dst), ['いちばん', 'にばん']);
-eq('không còn pending → vòng lặp kết thúc', entries().filter(e => e.pending).length, 0);
-eq('chỉ thử đúng TRANS_MAX_TRY=2 lần', aiCalls.length, 2);
-
-// ═════════════════════ G5c: kết quả lỗi thời khi transcript bị xóa giữa lúc chờ API ═══
-group('G5c chống gán kết quả lỗi thời');
-resetAll();
-aiMode = 'ok';
-S('transEnabled = true; activeSubTab = "translate";');
-// sendMessage giả: user bấm "Xóa transcript" TRƯỚC khi response về
-const realSend = chromeStub.runtime.sendMessage;
-chromeStub.runtime.sendMessage = (msg, cb) => {
-  aiCalls.push(clone(msg));
-  S('lastSegments = []; reconcileTrans();');          // transcript bị xóa giữa dòng
-  cb({ success: true, data: { translate: fakeTranslate(msg.text) } });
-};
-feed([{ speaker: 'A', text: 'いちばん' }]);
-eq('kết quả cũ bị loại bỏ, không gán sai chỗ', entries().length, 0);
-chromeStub.runtime.sendMessage = realSend;
-
-// đổi nội dung segment giữa lúc chờ → kết quả cũ cũng bị loại
-resetAll();
-S('transEnabled = true; activeSubTab = "translate";');
-chromeStub.runtime.sendMessage = (msg, cb) => {
-  aiCalls.push(clone(msg));
-  S('lastSegments = [{ speaker: "A", text: "まったく違う" }]; reconcileTrans();');
-  cb({ success: true, data: { translate: fakeTranslate(msg.text) } });
-};
-feed([{ speaker: 'A', text: 'いちばん' }]);
-// Không có guard thì dst sẽ là "VI[いちばん]" — bản dịch của nội dung đã bị xóa
-eq('bản dịch lỗi thời bị loại, dịch lại theo nội dung mới', entries()[0].dst, 'VI[まったく違う]');
-eq('đã dịch xong nội dung mới', entries()[0].pending, '');
-chromeStub.runtime.sendMessage = realSend;
-
-// ═════════════════════ G5d: segment dài thêm trong lúc chờ API ═══════════════
-group('G5d segment dài thêm khi đang chờ API');
-resetAll();
-aiMode = 'ok';
-S('transEnabled = true; activeSubTab = "translate";');
-let grewOnce = false;
-chromeStub.runtime.sendMessage = (msg, cb) => {
-  aiCalls.push(clone(msg));
-  if (!grewOnce) {
-    grewOnce = true;
-    // người nói nói tiếp trong lúc request đang bay
-    S('lastSegments = [{ speaker: "A", text: "いちばん にばん" }]; reconcileTrans();');
-  }
-  cb({ success: true, data: { translate: fakeTranslate(msg.text) } });
-};
-feed([{ speaker: 'A', text: 'いちばん' }]);
-eq('phần nói thêm cũng được dịch ngay, không bị kẹt', entries()[0].dst, 'VI[いちばん] VI[にばん]');
-eq('không còn pending', entries()[0].pending, '');
-eq('mỗi phần chỉ gửi 1 lần', aiCalls.map(c => c.text), ['#1: いちばん', '#1: にばん']);
-chromeStub.runtime.sendMessage = realSend;
-
-// ═════════════════════ G6: lỗi API ═════════════════════
-group('G6 lỗi API');
-resetAll();
-S('transEnabled = true; activeSubTab = "translate";');
-aiMode = 'error';
-feed([{ speaker: 'A', text: 'テスト' }]);
-flushTimeouts(8);   // để các lần retry chạy hết
-eq('dừng sau TRANS_MAX_FAIL lần', S('transFailCount'), 3);
-check('thông báo lỗi được hiển thị', (elements['translateStatus']?.textContent || '').includes('quota'),
-  'status=' + elements['translateStatus']?.textContent);
-eq('không mất pending (vẫn chờ dịch lại)', entries()[0].pending, 'テスト');
-const callsAfterFail = aiCalls.length;
-feed([{ speaker: 'A', text: 'テスト です' }]);
-eq('đã dừng thì không gọi thêm', aiCalls.length, callsAfterFail);
-
-// mở lại tab Translate = reset lỗi, thử lại được
-aiMode = 'ok';
+feed([seg('A', 'ぜんぶ無視。'), seg('B', 'これも無視。'), seg('C', 'それも。')]);
 openTranslateTab();
-check('mở lại tab Translate → dịch lại thành công', entries()[0].dst.startsWith('VI['), 'dst=' + entries()[0].dst);
+flushTimeouts(8);
+eq('AI không trả gì → giữ bản gốc', [dstOf(0), dstOf(1)], ['ぜんぶ無視。', 'これも無視。']);
+eq('dừng hẳn, không quay vòng', stateCount('queued') + stateCount('sending'), 0);
+check('số lần gọi API có trần', aiCalls.length <= 3, 'aiCalls=' + aiCalls.length);
 
-// ═════════════════════ G7: đồng bộ khi transcript bị xóa / đổi ═════════════════════
-group('G7 reconcile khi transcript thay đổi');
+// ═════════════════════ G11: lỗi API ═════════════════════
+group('G11 lỗi API — thử lại rồi dừng, không treo');
 resetAll();
-S('transEnabled = true; activeSubTab = "translate";');
-feed([{ speaker: 'A', text: 'いち' }, { speaker: 'B', text: 'に' }]);
-eq('2 entry', entries().length, 2);
+aiMode = 'error';
+feed([seg('A', 'エラーテスト。')]);
+openTranslateTab();
+flushTimeouts(10);
+eq('không còn request treo', S('transInflight.size'), 0);
+eq('đã đạt trần số lần lỗi', S('transFailCount') >= 3, true);
+check('status hiện lỗi cho user', elements['translateStatus'].textContent.includes('⚠'),
+      elements['translateStatus'].textContent);
 
-// Xóa transcript trong popup → segments rỗng
-feed([]);
-eq('segments rỗng → entries rỗng', entries().length, 0);
-eq('box về placeholder', elements['translateBox'].innerHTML.includes('Chưa có nội dung'), true);
-
-// segment bị thay hẳn nội dung (không còn prefix cũ) → dịch lại
-feed([{ speaker: 'A', text: 'いち' }]);
+aiMode = 'ok';
 aiCalls.length = 0;
-feed([{ speaker: 'A', text: 'まったく別の内容' }]);
-eq('nội dung khác prefix → dịch lại toàn bộ dòng', aiCalls.map(c => c.text), ['#1: まったく別の内容']);
-eq('dst thay mới, không nối chồng', entries()[0].dst, 'VI[まったく別の内容]');
+clickEl('retranslateBtn');   // user bấm "Dịch lại"
+flushTimeouts(4);
+check('nút Dịch lại khởi động lại được', aiCalls.length >= 1, 'aiCalls=' + aiCalls.length);
+eq('dịch thành công sau khi bấm Dịch lại', dstOf(0), 'VI[エラーテスト。]');
 
-// đổi tên người nói ở cùng index → dịch lại
-aiCalls.length = 0;
-feed([{ speaker: 'B', text: 'まったく別の内容' }]);
-eq('đổi speaker → dịch lại', aiCalls.length, 1);
-eq('speaker mới được ghi nhận', entries()[0].speaker, 'B');
-
-// ═════════════════════ G8: cache storage ═════════════════════
-group('G8 cache bản dịch trong storage');
+// ═════════════════════ G12: hoãn phần tồn đọng ═════════════════════
+group('G12 backlog — mở tab giữa chừng không đốt quota');
 resetAll();
+const backlog = [];
+for (let i = 0; i < 60; i++) backlog.push(seg('S' + i, `過去${i}です。`));
+feed(backlog);                     // transcript dài sẵn, tab Translate chưa mở
+eq('chưa mở tab → chưa gọi API', aiCalls.length, 0);
+
+aiMode = 'manual';
+S('setSubTab("translate")');
+eq('20 dòng cũ nhất bị hoãn', stateCount('deferred'), 20);
+const sentCount = pendingCalls.reduce((n, p) => n + p.msg.meta.count, 0);
+eq('chỉ dịch 40 dòng mới nhất', sentCount, 40);
+check('nút "Dịch phần cũ" hiện ra', elements['backfillTransBtn'].style.display === '',
+      'display=' + elements['backfillTransBtn'].style.display);
+check('nút ghi rõ số dòng', elements['backfillTransLabel'].textContent.includes('20'),
+      elements['backfillTransLabel'].textContent);
+
+pendingCalls.forEach((_, i) => resolveCall(i));
+flushTimeouts(3);
+aiMode = 'ok';
+aiCalls.length = 0;
+clickEl('backfillTransBtn');
+flushTimeouts(4);
+eq('bấm nút → dịch nốt phần cũ', stateCount('deferred'), 0);
+check('có gọi API cho phần cũ', aiCalls.length >= 1, 'aiCalls=' + aiCalls.length);
+eq('dòng cũ nhất đã có bản dịch', dstOf(0), 'VI[過去0です。]');
+check('nút ẩn đi khi hết phần hoãn', elements['backfillTransBtn'].style.display === 'none');
+
+// Mở LẠI popup giữa cuộc họp: transEnabled đã lưu sẵn = true nên không còn là
+// "lần đầu bấm tab" — vẫn phải hoãn, nếu không mỗi lần mở popup là một cú dồn.
+resetAll();
+aiMode = 'manual';
 S('transEnabled = true; activeSubTab = "translate";');
-feed([{ speaker: 'matsuda', text: 'ありがとう' }]);
-flushTimeouts();   // saveTransSoon (debounce 800ms)
+const reopened = [];
+for (let i = 0; i < 60; i++) reopened.push(seg('R' + i, `再開${i}です。`));
+feed(reopened);
+eq('mở lại popup cũng hoãn phần cũ', stateCount('deferred'), 20);
+eq('chỉ gửi 40 dòng mới nhất', pendingCalls.reduce((n, p) => n + p.msg.meta.count, 0), 40);
+
+// Dịch lại toàn bộ là user chủ động → KHÔNG được hoãn nữa
+aiMode = 'ok';
+pendingCalls.length = 0;
+clickEl('retranslateBtn');
+flushTimeouts(6);
+eq('bấm Dịch lại thì dịch hết, không hoãn', stateCount('deferred'), 0);
+eq('mọi dòng đều có bản dịch', chunks().filter(c => !c.dst).length, 0);
+
+// ═════════════════════ G13: render tăng dần ═════════════════════
+group('G13 render tăng dần — không dựng lại dòng không đổi');
+resetAll();
+feed([seg('A', 'いち。'), seg('B', 'に。')]);
+openTranslateTab();
+const row0 = S('transRows[0].el');
+const row1 = S('transRows[1].el');
+feed([seg('A', 'いち。'), seg('B', 'に。'), seg('C', 'さん。')]);
+check('dòng 0 giữ nguyên DOM node', S('transRows[0].el') === row0);
+check('dòng 1 giữ nguyên DOM node', S('transRows[1].el') === row1);
+eq('dòng mới được thêm vào', renderedLines().length, 3);
+
+feed([seg('A', 'いち。')]);   // transcript ngắn lại
+eq('dòng thừa bị gỡ khỏi DOM', renderedLines().length, 1);
+eq('transRows co lại theo', S('transRows.length'), 1);
+
+// interim hiện bản gốc
+feed([seg('A', 'いち。')], { speaker: 'B', text: 'まだ話しています' });
+eq('interim hiện bản gốc ở cuối', renderedLines()[1], 'B: まだ話しています');
+
+// ═════════════════════ G14: lưu / nạp lại ═════════════════════
+group('G14 cache theo cuộc họp — đóng/mở popup không tốn quota');
+resetAll();
+feed([seg('A', 'ほぞんテスト。')]);
+openTranslateTab();
+flushTimeouts(3);
 const saved = storageData['mt_trans:teams:m1'];
-check('đã ghi cache vào storage.local', !!saved, JSON.stringify(saved));
-eq('cache có enabled=true', saved?.enabled, true);
-eq('cache lưu đúng bản dịch', saved?.entries?.[0]?.dst, 'VI[ありがとう]');
+check('đã lưu vào storage', !!saved && Array.isArray(saved.segs), JSON.stringify(saved)?.slice(0, 90));
+eq('lưu cả cờ enabled', saved.enabled, true);
 
-// mở popup lại: hydrate từ cache rồi feed cùng segments → KHÔNG gọi API
-S('transEntries = []; transEnabled = false; aiReset = 0;');
+// giả lập mở lại popup
+S('resetTransState(); lastSegments = []; lastInterim = null; transCache.clear();');
 S(`hydrateTrans(${JSON.stringify(saved)})`);
-eq('hydrate lại enabled', S('transEnabled'), true);
+flushTimeouts(1);
+eq('nạp lại được bản dịch cũ', dstOf(0), 'VI[ほぞんテスト。]');
+eq('không chunk nào kẹt ở trạng thái đang gửi', stateCount('sending'), 0);
 aiCalls.length = 0;
-feed([{ speaker: 'matsuda', text: 'ありがとう' }]);
-eq('dùng cache, không gọi lại API', aiCalls.length, 0);
-eq('bản dịch cũ vẫn còn', entries()[0].dst, 'VI[ありがとう]');
+S('transEnabled = true;');
+feed([seg('A', 'ほぞんテスト。')]);
+eq('mở lại không gọi API lần nữa', aiCalls.length, 0);
 
-// cache quá hạn (TTL 2h) → bỏ
-S('transEntries = []; transEnabled = false;');
-const stale = clone(saved); stale.savedAt = Date.now() - 3 * 60 * 60 * 1000;
-S(`hydrateTrans(${JSON.stringify(stale)})`);
-eq('cache hết hạn không được dùng', entries().length, 0);
-eq('cache hết hạn bị xóa khỏi storage', storageData['mt_trans:teams:m1'], undefined);
+// cache quá hạn thì bỏ
+S('resetTransState();');
+S(`hydrateTrans(${JSON.stringify({ ...saved, savedAt: Date.now() - 3 * 60 * 60 * 1000 })})`);
+eq('cache quá hạn bị bỏ', segs().length, 0);
 
-// ═════════════════════ G9: Dịch lại / Copy / Tải ═════════════════════
-group('G9 Dịch lại + Copy + Tải');
+// ═════════════════════ G15: Copy / Tải ═════════════════════
+group('G15 Copy / Tải bản dịch');
 resetAll();
-S('transEnabled = true; activeSubTab = "translate";');
-feed([{ speaker: 'matsuda', text: 'ありがとう' }, { speaker: 'tanaka', text: 'はい' }]);
-eq('text xuất ra giống format transcript', S('translateAsText()'), 'matsuda: VI[ありがとう]\ntanaka: VI[はい]');
+feed([seg('田中', 'こんにちは。'), seg('鈴木', 'よろしく。')]);
+openTranslateTab();
+eq('text xuất ra đúng định dạng', S('translateAsText()'),
+   '田中: VI[こんにちは。]\n鈴木: VI[よろしく。]');
+clickEl('copyTranslateBtn');
+eq('copy đúng nội dung', sandbox._lastCopy, '田中: VI[こんにちは。]\n鈴木: VI[よろしく。]');
+S('lastCaptionMode = "teams-cc";');
+clickEl('dlTranslateBtn');
+check('tên file có platform', sandbox._lastDownload.name.startsWith('Translate_Teams_'), sandbox._lastDownload.name);
+check('header liệt kê người nói', sandbox._lastDownload.text.includes('Speakers: 田中, 鈴木'));
 
-// Dịch lại toàn bộ
-aiCalls.length = 0;
-S('(function(){ transEntries = transEntries.map(e => ({ speaker: e.speaker, src: "", dst: "", pending: "", tries: 0 })); transFailCount = 0; transError = ""; reconcileTrans(); renderTranslate(); pumpTranslate(); })()');
-flushTimeouts();
-eq('dịch lại gửi toàn bộ dòng', aiCalls.length, 1);
-eq('dịch lại gộp 2 dòng trong 1 lô', aiCalls[0].text.split('\n').length, 2);
-eq('không nối chồng bản dịch cũ', S('translateAsText()'), 'matsuda: VI[ありがとう]\ntanaka: VI[はい]');
+// ═════════════════════ G16: chọn model (background.js) ═════════════════════
+// Bộ chấm điểm phải TỰ nhận model mới mà không cần sửa code — đây là lý do
+// không hardcode 'gemini-2.5-flash-lite' / 'gpt-4o-mini' / 'deepseek-v4-flash'.
+group('G16 chọn model — tự nhận bản mới, không hardcode');
+const bgSrc = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8');
+const bgStart = bgSrc.indexOf('const MODEL_TIER_FOR_MODE');
+const bgEnd   = bgSrc.indexOf('function readModelCache');
+check('trích được khối chọn model từ background.js', bgStart > 0 && bgEnd > bgStart);
+const bgBox = { console };
+vm.createContext(bgBox);
+vm.runInContext(bgSrc.slice(bgStart, bgEnd), bgBox, { filename: 'background.models.js' });
+const B = (expr) => vm.runInContext(expr, bgBox);
+const pick = (ids, tier) => B(`rankModels(${JSON.stringify(ids)}, ${JSON.stringify(tier)})`)[0];
 
-// Tải xuống: header + tên file giống kiểu transcript
-S('lastCaptionMode = "teams-cc"');
-S('(function(){ const t = translateAsText().trim(); const now = new Date(); const mode = lastCaptionMode || "Meeting"; const platform = mode.includes("meet") ? "GoogleMeet" : mode.includes("teams") ? "Teams" : mode.includes("zoom") ? "Zoom" : "Meeting"; downloadText(t, "Translate_" + platform + ".txt"); })()');
-check('tên file có platform', sandbox._lastDownload?.name === 'Translate_Teams.txt', sandbox._lastDownload?.name);
+eq('mode translate dùng hạng lite', B('tierForMode("translate")'), 'lite');
+eq('mode summary dùng hạng full',   B('tierForMode("summary")'),   'full');
+eq('mode gijiroku dùng hạng full',  B('tierForMode("gijiroku")'),  'full');
 
-// ═════════════════════ G10: reset khi Kết thúc phiên ═════════════════════
-group('G10 reset phiên');
-resetAll();
-S('transEnabled = true; activeSubTab = "translate";');
-feed([{ speaker: 'A', text: 'テスト' }]);
-flushTimeouts();
-check('có cache trước khi reset', !!storageData['mt_trans:teams:m1']);
-S('resetTransState()');
-eq('entries bị xóa', entries().length, 0);
-eq('transEnabled tắt', S('transEnabled'), false);
-eq('box về placeholder', elements['translateBox'].innerHTML.includes('Chưa có nội dung'), true);
-aiCalls.length = 0;
-feed([{ speaker: 'A', text: 'テスト' }]);
-eq('sau reset không tự dịch nữa (chờ user mở tab)', aiCalls.length, 0);
+eq('Gemini hôm nay: chọn flash-lite',
+   pick(['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'], 'lite'),
+   'gemini-2.5-flash-lite');
+eq('Gemini 3.5 ra mắt: TỰ nhận, không cần sửa code',
+   pick(['gemini-2.5-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.5-pro'], 'lite'),
+   'gemini-3.5-flash-lite');
+eq('OpenAI: gpt-5-mini thắng gpt-4o-mini',
+   pick(['gpt-4o-mini', 'gpt-5-mini', 'gpt-5', 'gpt-4o'], 'lite'), 'gpt-5-mini');
+eq('DeepSeek: v7-flash thắng v4-flash',
+   pick(['deepseek-v4-flash', 'deepseek-v7-flash', 'deepseek-chat'], 'lite'), 'deepseek-v7-flash');
 
-// ═════════════════════ summary ═════════════════════
-console.log('\n──────── SUMMARY ────────');
-for (const [g, r] of Object.entries(groups)) console.log(`${g}: ${r.pass} pass / ${r.fail} fail`);
-console.log(`TOTAL: ${pass} pass / ${fail} fail`);
-if (failures.length) { console.log('\nFailures:'); failures.forEach(f => console.log('  - ' + f)); }
+eq('hạng full KHÔNG lấy bản lite',
+   pick(['gemini-3.5-flash-lite', 'gemini-3.5-pro', 'gemini-2.5-pro'], 'full'), 'gemini-3.5-pro');
+eq('hạng lite tránh model đắt (pro/opus/reasoner)',
+   pick(['gemini-3.5-pro', 'gemini-2.5-flash'], 'lite'), 'gemini-2.5-flash');
+eq('không có model rẻ nào → vẫn trả model chạy được',
+   pick(['gemini-3.5-pro'], 'lite'), 'gemini-3.5-pro');
+
+eq('loại model không phải chat (ảnh/audio/embedding)',
+   B(`rankModels(["text-embedding-3-small","dall-e-3","whisper-1","tts-1","gpt-5-mini"], "lite")`),
+   ['gpt-5-mini']);
+eq('loại model ảnh của Gemini',
+   B(`rankModels(["gemini-3.5-flash-image","gemini-3.5-flash-lite"], "lite")`),
+   ['gemini-3.5-flash-lite']);
+eq('danh sách rỗng → mảng rỗng (gọi hàm rơi về MODEL_FALLBACK)',
+   B('rankModels([], "lite")'), []);
+
+// ═════════════════════ tổng kết ═════════════════════
+console.log('\n' + '='.repeat(60));
+Object.entries(groups).forEach(([g, r]) => console.log(`  ${g}: ${r.pass} pass, ${r.fail} fail`));
+console.log('='.repeat(60));
+console.log(`TOTAL: ${pass} pass, ${fail} fail`);
+if (failures.length) {
+  console.log('\nFAILURES:');
+  failures.forEach(f => console.log('  - ' + f));
+}
 process.exit(fail ? 1 : 0);

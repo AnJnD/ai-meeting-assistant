@@ -868,6 +868,14 @@
               </svg>
               Tải
             </button>
+            <!-- Chỉ hiện khi mở tab giữa cuộc họp dài: phần cũ được hoãn lại
+                 để không âm thầm đốt quota, user tự quyết có dịch bù hay không -->
+            <button class="icon-btn" id="backfillTransBtn" style="display:none" title="Dịch nốt phần cũ">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 4v4l2.5 1.5"/><circle cx="8" cy="8" r="6"/>
+              </svg>
+              <span id="backfillTransLabel">Dịch phần cũ</span>
+            </button>
             <span class="tr-status" id="translateStatus"></span>
             <span class="spacer"></span>
             <button class="icon-btn" id="retranslateBtn" title="Dịch lại toàn bộ">

@@ -7,11 +7,11 @@ Chrome extension hỗ trợ cuộc họp tiếng Nhật — ghi transcript realt
 - **Standard browser popup** — UI hiển thị ngay tại icon extension (không phải overlay), đóng khi click ra ngoài, capture vẫn chạy ngầm
 - **Icon trạng thái** — Icon xám khi chưa Start, icon màu xanh khi đang ghi, chấm vàng khi Standby
 - **Transcript realtime** — Đọc phụ đề (CC) từ Google Meet / Microsoft Teams / Zoom, hiển thị theo từng người nói trong popup
-- **Live Translate** — Tab **Translate** ngay cạnh Transcript: dịch trực tiếp nội dung transcript sang tiếng Việt bằng chính API key có sẵn, trình bày y như tab Transcript (tên người nói giữ nguyên, chỉ dịch phần lời)
+- **Live Translate** — Tab **Translate** ngay cạnh Transcript: dịch trực tiếp nội dung transcript sang tiếng Việt bằng chính API key có sẵn, trình bày y như tab Transcript (tên người nói giữ nguyên, chỉ dịch phần lời). Chạy 3 lô song song trên model rẻ nhất của key, có cache câu lặp — rẻ hơn ~60–75% so với bản 4.5
 - **Phân biệt người nói** — Tự động tách tên người nói (hỗ trợ tên Latin, Kanji, Katakana, Korean, tên có prefix/suffix như `(OMN) Nguyen Van A`, `Matsumura (松村)`)
 - **Standby Mode** — Tự động ghi ngầm ngay khi mở trang họp, không cần bấm Start
 - **Tạo 議事録** — AI tạo biên bản họp chuẩn format công ty Nhật chỉ với 1 nút bấm
-- **Tự động chọn model mới nhất** — Luôn sử dụng Gemini Flash phiên bản mới nhất
+- **Tự động chọn model mới nhất** — Hỏi danh sách model của provider rồi chấm điểm theo phiên bản: biên bản họp dùng bản Flash mới nhất, Live Translate dùng bản rẻ nhất (Flash-Lite / mini). Nhà cung cấp ra model mới là tự nhận, không cần cập nhật extension
 - **Tự động lưu** — Transcript được lưu liên tục vào Chrome Storage, phục hồi khi mở lại popup
 - **Lịch sử cuộc họp** — Xem lại và tải xuống transcript các cuộc họp trước
 
@@ -56,7 +56,7 @@ Chrome extension hỗ trợ cuộc họp tiếng Nhật — ghi transcript realt
 6. Khi cần biên bản họp → bấm **"議事録"** → kết quả hiển thị trong popup
 7. Bấm **"Stop"** để kết thúc phiên
 
-> **Lưu ý về Translate:** bản dịch chỉ chạy khi popup đang mở (popup đóng thì Chrome huỷ tiến trình). Mở lại popup, phần chưa dịch sẽ được dịch tiếp — phần đã dịch được cache nên không gọi lại API. Câu đang nói (interim) hiển thị bản gốc, sẽ được dịch ngay khi câu chốt lại.
+> **Lưu ý về Translate:** bản dịch chỉ chạy khi popup đang mở (popup đóng thì Chrome huỷ tiến trình). Mở lại popup, phần chưa dịch sẽ được dịch tiếp — phần đã dịch được cache nên không gọi lại API. Câu đang nói (interim) hiển thị bản gốc, sẽ được dịch ngay khi câu chốt lại. Nếu mở tab Translate giữa một cuộc họp đã dài, phần cũ được hoãn lại để khỏi tốn quota; bấm **Dịch phần cũ (N)** nếu cần dịch bù. Khi API lỗi hoặc không phản hồi, các dòng còn chờ sẽ hiện **bản gốc** kèm cảnh báo ⚠ thay vì treo "đang dịch...".
 
 ## Cấu trúc thư mục
 

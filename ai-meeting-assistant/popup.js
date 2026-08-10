@@ -243,8 +243,10 @@ function bindTestKey(btnId, statusId) {
       let modelText = '';
       if (res?.modelInfo) {
         const info = res.modelInfo;
-        modelText = '\n▸ Đang dùng: ' + info.using
-          + '\n▸ Danh sách: ' + (info.available.length ? info.available.join(', ') : 'không tìm thấy');
+        const list = info.available || [];
+        modelText = '\n▸ Đang dùng: ' + (info.using || 'none')
+          + '\n▸ Live Translate: ' + (info.translateUsing || 'none')
+          + '\n▸ Danh sách: ' + (list.length ? list.join(', ') : 'không tìm thấy');
       }
       if (res?.ok) setStatus(statusId, 'API Key OK' + modelText, 'ok');
       else         setStatus(statusId, (res?.error || 'Key không hợp lệ') + modelText, 'err');
@@ -799,47 +801,173 @@ document.getElementById('dlScriptBtn').addEventListener('click', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════
-// LIVE TRANSLATE — dịch trực tiếp nội dung tab Transcript sang tiếng Việt
+// LIVE TRANSLATE v2 — dịch trực tiếp nội dung tab Transcript sang tiếng Việt
 //
 // Nguồn dữ liệu: data.segments của tab Transcript (KHÔNG chạm vào logic bắt
-// caption trong content.js). Mỗi segment được dịch theo "delta": phần text mới
-// thêm vào segment sẽ được dịch rồi nối tiếp vào bản dịch cũ — nên không bao
-// giờ dịch lại phần đã dịch. Kết quả cache theo meeting trong storage.local.
+// caption trong content.js).
+//
+// Đơn vị dịch là CHUNK BẤT BIẾN: mỗi khi segment dài thêm, phần mới được cắt
+// thành chunk và chunk đó không bao giờ đổi nội dung nữa. Nhờ vậy kết quả API
+// trả về lúc nào cũng ghi được — khác bản 4.5 vốn so prefix của segment rồi
+// vứt cả lô khi transcript thay đổi trong lúc chờ.
+//
+// Ba thứ giữ cho nó không đơ và không đốt tiền:
+//   1. Watchdog cho từng request. Service worker MV3 bị Chrome kill giữa chừng
+//      thì callback của sendMessage KHÔNG BAO GIỜ chạy; bản 4.5 không có
+//      watchdog nên cờ "đang chạy" kẹt vĩnh viễn → đúng cảnh "Đang dịch (37)..."
+//      đứng im không báo lỗi.
+//   2. Nhiều lô chạy song song và bỏ qua chunk đang bay khi gom lô kế tiếp,
+//      nên một dòng hỏng không chặn cả trăm dòng phía sau.
+//   3. Cache src→dst dùng chung mọi cuộc họp: cụm lặp ("はい", "そうですね")
+//      không tốn token, và khi phải dựng lại segment cũng không trả tiền lần hai.
 // ═════════════════════════════════════════════════════════════════
 
-const TRANS_BATCH    = 12;   // số dòng gửi mỗi lần gọi API
-const TRANS_MAX_FAIL = 3;    // số lần lỗi liên tiếp thì dừng, chờ user bấm "Dịch lại"
-const TRANS_MAX_TRY  = 2;    // 1 dòng thử tối đa 2 lần, sau đó giữ nguyên bản gốc
-const PUMP_DEBOUNCE  = 700;
+const TRANS_MAX_CHARS    = 1200;   // ký tự nguồn tối đa mỗi lần gọi API
+const TRANS_MAX_LINES    = 24;     // trần số dòng mỗi lô (AI dễ lạc số thứ tự khi quá dài)
+const TRANS_MAX_INFLIGHT = 3;      // số request chạy song song
+const TRANS_FLUSH_MS     = 400;    // gom thêm bấy nhiêu ms rồi mới bắn lô
+const TRANS_TIMEOUT_MS   = 25000;  // watchdog cho 1 request
+const TRANS_RETRY_MS     = 4000;
+const TRANS_MAX_FAIL     = 3;      // lỗi liên tiếp → dừng, chờ user bấm "Dịch lại"
+const TRANS_MAX_TRY      = 2;      // 1 chunk thử tối đa 2 lần rồi giữ nguyên bản gốc
+const TRANS_CHUNK_CHARS  = 220;    // chunk dài hơn thì cắt nhỏ
+const TRANS_BACKLOG      = 40;     // mở tab giữa chừng mà tồn hơn ngần này → hỏi user
+const TRANS_CACHE_MAX    = 500;
+const TRANS_CACHE_CHARS  = 120;    // câu dài hơn gần như không lặp → không cache
+const TRANS_CACHE_KEY    = 'mt_trans_cache';
 
 let activeSubTab    = 'transcript';   // 'transcript' | 'translate'
 let transEnabled    = false;          // bật sau lần đầu user mở tab Translate
-let transEntries    = [];             // [{ speaker, src, dst, pending, tries }] — song song segments
+// transSegs[i] song song lastSegments[i]
+//   { speaker, base, chunks: [{ src, dst, state, tries }] }
+//   state: 'queued' | 'sending' | 'done' | 'deferred'
+let transSegs       = [];
 let lastSegments    = [];
 let lastInterim     = null;
 let lastSpeakerMap  = {};
 let lastCaptionMode = '';
-let transRunning    = false;
+let transInflight   = new Map();      // reqId -> chunk[] đang chờ API
+let transReqSeq     = 0;
 let transFailCount  = 0;
 let transError      = '';
 let transRetryTimer = null;
 let transSaveTimer  = null;
 let transPumpTimer  = null;
+let transCache      = new Map();      // src đã chuẩn hoá -> dst (Map giữ thứ tự chèn = LRU)
+let transCacheDirty = false;
+let transRows       = [];             // [{ sig, el }] — cache DOM để render tăng dần
+let transBacklogChecked = false;      // đã xét tồn đọng cho phiên popup này chưa
+
+// ── Cache bản dịch, dùng chung mọi cuộc họp ──────────────────────
+function cacheKeyOf(src) {
+  return String(src).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function cacheGet(src) {
+  const k = cacheKeyOf(src);
+  if (!transCache.has(k)) return undefined;
+  const v = transCache.get(k);
+  transCache.delete(k); transCache.set(k, v);   // chạm vào → đẩy xuống cuối
+  return v;
+}
+
+function cachePut(src, dst) {
+  if (!dst || src.length > TRANS_CACHE_CHARS) return;
+  const k = cacheKeyOf(src);
+  transCache.delete(k);
+  transCache.set(k, dst);
+  while (transCache.size > TRANS_CACHE_MAX) {
+    transCache.delete(transCache.keys().next().value);
+  }
+  transCacheDirty = true;
+}
+
+function loadTransCache() {
+  try {
+    chrome.storage.local.get([TRANS_CACHE_KEY], r => {
+      void chrome.runtime.lastError;
+      const arr = r?.[TRANS_CACHE_KEY];
+      if (!Array.isArray(arr)) return;
+      arr.forEach(p => { if (p?.length === 2) transCache.set(p[0], p[1]); });
+
+      // storage.local.get là bất đồng bộ nên cache thường về SAU lần
+      // reconcileTrans() đầu tiên. Quét lại hàng đợi: dòng nào đã có sẵn bản
+      // dịch thì lấy luôn, khỏi gửi lên API lần nữa.
+      let filled = false;
+      allChunks().forEach(c => {
+        if (c.state !== 'queued') return;
+        const hit = cacheGet(c.src);
+        if (hit === undefined) return;
+        c.dst   = hit;
+        c.state = 'done';
+        filled  = true;
+      });
+      if (filled) {
+        if (activeSubTab === 'translate') renderTranslate();
+        else                              renderTransStatus();
+      }
+    });
+  } catch (_) {}
+}
+
+function saveTransCache() {
+  if (!transCacheDirty) return;
+  transCacheDirty = false;
+  try {
+    chrome.storage.local.set({ [TRANS_CACHE_KEY]: [...transCache] }, () => { void chrome.runtime.lastError; });
+  } catch (_) {}
+}
+
+// ── Dịch được mà không tốn token? ────────────────────────────────
+// Trả về chuỗi kết quả, hoặc null nếu bắt buộc phải gọi API.
+const VI_MARK  = /[ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ]/i;
+const CJK_MARK = /[぀-ヿ㐀-鿿가-힯]/;   // kana, Hán, Hangul
+
+function freeTranslate(src) {
+  const t = String(src).trim();
+  if (!t) return '';
+  if (!/\p{L}/u.test(t)) return t;                       // chỉ số / dấu câu / ký hiệu
+  if (!CJK_MARK.test(t) && VI_MARK.test(t)) return t;    // đã là tiếng Việt
+  const hit = cacheGet(t);
+  return hit === undefined ? null : hit;
+}
+
+// ── Cắt phần text mới thêm thành chunk ───────────────────────────
+// Cắt theo câu để (a) chunk ngắn thì tỉ lệ trúng cache cao hơn nhiều,
+// (b) câu vừa chốt là gửi đi ngay, không phải chờ hết cả đoạn.
+function splitChunks(text) {
+  const out = [];
+  let buf = '';
+  const push = () => { const t = buf.trim(); if (t) out.push(t); buf = ''; };
+  for (const ch of String(text)) {
+    buf += ch;
+    if ('。．！？!?\n'.indexOf(ch) >= 0) push();
+    else if (buf.length >= TRANS_CHUNK_CHARS && (ch === ' ' || ch === '、' || ch === ',')) push();
+  }
+  push();
+  return out;
+}
 
 // ── Nạp cache từ storage ─────────────────────────────────────────
 function hydrateTrans(stored) {
+  loadTransCache();
   if (!stored) return;
   if (Date.now() - (stored.savedAt || 0) > GIJIROKU_TTL_MS) {
     if (currentTransKey) chrome.storage.local.remove([currentTransKey]);
     return;
   }
   transEnabled = !!stored.enabled;
-  transEntries = (stored.entries || []).map(e => ({
-    speaker: e.speaker || 'Speaker',
-    src:     e.src || '',
-    dst:     e.dst || '',
-    pending: '',
-    tries:   0
+  transSegs = (stored.segs || []).map(s => ({
+    speaker: s.speaker || 'Speaker',
+    base:    s.base || '',
+    // Không chunk nào được nạp lại ở trạng thái 'sending': popup đóng là
+    // request cũ mất, để nguyên sẽ thành dòng treo "đang dịch..." vĩnh viễn.
+    chunks: (s.chunks || []).map(c => ({
+      src:   c.src || '',
+      dst:   c.dst || '',
+      state: c.dst ? 'done' : 'queued',
+      tries: 0
+    }))
   }));
 }
 
@@ -847,12 +975,17 @@ function saveTransSoon() {
   if (!currentTransKey) return;
   clearTimeout(transSaveTimer);
   transSaveTimer = setTimeout(() => {
-    const entries = transEntries.map(e => ({ speaker: e.speaker, src: e.src, dst: e.dst }));
+    const segs = transSegs.map(s => ({
+      speaker: s.speaker,
+      base:    s.base,
+      chunks:  s.chunks.map(c => ({ src: c.src, dst: c.dst }))
+    }));
     try {
       chrome.storage.local.set({
-        [currentTransKey]: { enabled: transEnabled, entries, savedAt: Date.now() }
+        [currentTransKey]: { enabled: transEnabled, segs, savedAt: Date.now() }
       }, () => { void chrome.runtime.lastError; });
-    } catch(_) {}
+    } catch (_) {}
+    saveTransCache();
   }, 800);
 }
 
@@ -860,111 +993,211 @@ function resetTransState() {
   clearTimeout(transSaveTimer);
   clearTimeout(transRetryTimer);
   clearTimeout(transPumpTimer);
-  transEntries   = [];
-  transRunning   = false;
+  transSegs      = [];
+  transRows      = [];
+  // Request đang bay vẫn sẽ trả về, nhưng chunk của nó không còn nằm trong
+  // transSegs nên chỉ đi vào cache — kết quả đã trả tiền không bị vứt.
+  transInflight  = new Map();
   transFailCount = 0;
   transError     = '';
   transEnabled   = false;
+  transBacklogChecked = false;
   const box = document.getElementById('translateBox');
   if (box) box.innerHTML = '<span class="placeholder">Chưa có nội dung để dịch...</span>';
   renderTransStatus();
 }
 
-// ── Đồng bộ transEntries với segments hiện tại ────────────────────
-// segments[i].text chỉ dài thêm (content.js nối text vào segment cuối cùng),
-// nên so sánh prefix là đủ để biết phần nào chưa dịch.
+function allChunks() {
+  const out = [];
+  transSegs.forEach(s => { if (s) s.chunks.forEach(c => out.push(c)); });
+  return out;
+}
+
+function countChunks(states) {
+  let n = 0;
+  transSegs.forEach(s => { if (s) s.chunks.forEach(c => { if (states.indexOf(c.state) >= 0) n++; }); });
+  return n;
+}
+
+// ── Đồng bộ transSegs với segments hiện tại ──────────────────────
 function reconcileTrans() {
-  if (transEntries.length > lastSegments.length) transEntries.length = lastSegments.length;
+  if (transSegs.length > lastSegments.length) transSegs.length = lastSegments.length;
+
   for (let i = 0; i < lastSegments.length; i++) {
     const seg = lastSegments[i];
-    const e   = transEntries[i];
-    if (!e || e.speaker !== seg.speaker || !seg.text.startsWith(e.src)) {
-      // Entry mới, hoặc segment đã thay đổi (vd: sau khi Xóa transcript) → dịch lại
-      transEntries[i] = { speaker: seg.speaker, src: '', dst: '', pending: seg.text, tries: 0 };
-    } else {
-      e.pending = seg.text.slice(e.src.length).trim();
+    let   s   = transSegs[i];
+
+    // content.js chỉ NỐI thêm vào segment cuối của cùng người nói, nên bình
+    // thường seg.text luôn bắt đầu bằng phần đã xử lý. Khi không khớp (user
+    // bấm "Xóa transcript", speakerMap đổi tên…) thì dựng lại — và không tốn
+    // thêm tiền, vì các chunk cũ đã nằm sẵn trong cache src→dst.
+    if (!s || s.speaker !== seg.speaker || !seg.text.startsWith(s.base)) {
+      s = transSegs[i] = { speaker: seg.speaker, base: '', chunks: [] };
     }
+
+    const delta = seg.text.slice(s.base.length);
+    s.base = seg.text;
+    if (!delta.trim()) continue;
+
+    splitChunks(delta).forEach(src => {
+      const free = freeTranslate(src);
+      s.chunks.push(free === null
+        ? { src, dst: '',   state: 'queued', tries: 0 }
+        : { src, dst: free, state: 'done',   tries: 0 });
+    });
   }
+}
+
+// ── Hoãn phần tồn đọng ───────────────────────────────────────────
+// Mở popup giữa cuộc họp dài: đừng âm thầm dịch bù cả trăm dòng cũ (rất tốn).
+// Chỉ đuổi kịp phần mới nhất, phần cũ để user tự bấm "Dịch phần cũ".
+function deferBacklog() {
+  const queued = allChunks().filter(c => c.state === 'queued');
+  if (queued.length <= TRANS_BACKLOG) return;
+  queued.slice(0, queued.length - TRANS_BACKLOG).forEach(c => { c.state = 'deferred'; });
+}
+
+function undeferAll() {
+  allChunks().forEach(c => { if (c.state === 'deferred') c.state = 'queued'; });
 }
 
 // ── Gọi AI dịch theo lô ──────────────────────────────────────────
 function schedulePump() {
   clearTimeout(transPumpTimer);
-  transPumpTimer = setTimeout(pumpTranslate, PUMP_DEBOUNCE);
+  transPumpTimer = setTimeout(pumpTranslate, TRANS_FLUSH_MS);
 }
 
 function pumpTranslate() {
-  if (!transEnabled || transRunning) return;
-  if (transFailCount >= TRANS_MAX_FAIL) return;
+  clearTimeout(transPumpTimer);
+  if (!transEnabled) return;
+  if (transFailCount >= TRANS_MAX_FAIL) { renderTransStatus(); return; }
 
-  const jobs = [];
-  for (let i = 0; i < transEntries.length && jobs.length < TRANS_BATCH; i++) {
-    const e   = transEntries[i];
-    const src = (e.pending || '').trim();
-    // baseSrc/speaker được chụp lại để phát hiện entry đã bị thay đổi khi
-    // response về (vd: user bấm "Xóa transcript" giữa lúc đang chờ API)
-    if (src) jobs.push({ i, src, fullSrc: lastSegments[i]?.text || src, baseSrc: e.src, speaker: e.speaker });
+  // Xét tồn đọng đúng MỘT lần mỗi phiên popup, ngay trước lô đầu tiên. Đặt ở
+  // đây (thay vì lúc bấm tab) để bắt được cả trường hợp mở lại popup giữa cuộc
+  // họp: transEnabled đã lưu từ trước nên không còn là "lần đầu bấm tab" nữa.
+  if (!transBacklogChecked) {
+    transBacklogChecked = true;
+    deferBacklog();
   }
-  if (!jobs.length) { transError = ''; renderTransStatus(); return; }
 
-  transRunning = true;
+  while (transInflight.size < TRANS_MAX_INFLIGHT) {
+    const jobs = takeBatch();
+    if (!jobs.length) break;
+    sendBatch(jobs);
+  }
   renderTransStatus();
+}
+
+// Gom lô kế tiếp. Chunk đang bay bị BỎ QUA chứ không làm dừng vòng lặp — bản
+// 4.5 luôn quét 12 dòng đầu tiên nên một dòng kẹt là chặn hết phần sau.
+function takeBatch() {
+  const jobs = [];
+  let   chars = 0;
+  const all  = allChunks();
+  for (let i = 0; i < all.length; i++) {
+    const c = all[i];
+    if (c.state !== 'queued') continue;
+    if (jobs.length && (jobs.length >= TRANS_MAX_LINES || chars + c.src.length > TRANS_MAX_CHARS)) break;
+    c.state = 'sending';
+    chars  += c.src.length;
+    jobs.push(c);
+  }
+  return jobs;
+}
+
+function sendBatch(jobs) {
+  const reqId = ++transReqSeq;
+  transInflight.set(reqId, jobs);
+
+  let settled = false;
+  const settle = (fn) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(watchdog);
+    transInflight.delete(reqId);
+    fn();
+    if (activeSubTab === 'translate') renderTranslate();
+    else                              renderTransStatus();
+    saveTransSoon();
+    // Lỗi thì để transRetryTimer lo, tránh quay vòng gọi API liên tục
+    if (!transError) pumpTranslate();
+  };
+
+  // Watchdog — chính là thứ bản 4.5 thiếu. Khi service worker MV3 bị Chrome
+  // kill giữa lúc chờ, callback dưới đây không bao giờ chạy; không có cái này
+  // thì slot inflight kẹt mãi và cả tab Translate đứng im không báo lỗi.
+  const watchdog = setTimeout(
+    () => settle(() => failBatch(jobs, 'API không phản hồi.')),
+    TRANS_TIMEOUT_MS
+  );
 
   const block = jobs.map((j, k) => `#${k + 1}: ${j.src}`).join('\n');
-  chrome.runtime.sendMessage(
-    { action: 'ai_request', mode: 'translate', text: block,
-      meta: { count: jobs.length, targetLang: 'Vietnamese' } },
-    res => {
-      transRunning = false;
-
-      if (chrome.runtime.lastError || !res?.success) {
-        transFailCount++;
-        transError = chrome.runtime.lastError ? 'Lỗi kết nối.' : (res?.error || 'Lỗi dịch.');
-        renderTransStatus();
-        if (transFailCount < TRANS_MAX_FAIL) {
-          clearTimeout(transRetryTimer);
-          transRetryTimer = setTimeout(pumpTranslate, 4000);
-        }
-        return;
+  try {
+    chrome.runtime.sendMessage(
+      { action: 'ai_request', mode: 'translate', text: block,
+        meta: { count: jobs.length, targetLang: 'Vietnamese' } },
+      res => {
+        const err = chrome.runtime.lastError;
+        settle(() => {
+          if (err || !res?.success) failBatch(jobs, err ? 'Lỗi kết nối.' : (res?.error || 'Lỗi dịch.'));
+          else                      applyBatch(jobs, res.data?.translate || '');
+        });
       }
+    );
+  } catch (_) {
+    settle(() => failBatch(jobs, 'Lỗi kết nối.'));
+  }
+}
 
-      transFailCount = 0;
-      transError     = '';
-      const parts = parseNumbered(res.data?.translate || '', jobs.length);
+// Chunk bất biến → kết quả LUÔN ghi được, không cần kiểm tra transcript còn
+// khớp hay không. Kể cả khi segment đã bị dựng lại, bản dịch vẫn vào cache.
+function applyBatch(jobs, text) {
+  transFailCount = 0;
+  transError     = '';
+  const parts = parseNumbered(text, jobs.length);
 
-      jobs.forEach((j, k) => {
-        const e = transEntries[j.i];
-        // Bỏ kết quả đã lỗi thời: entry bị thay/đổi người nói, hoặc segment
-        // không còn bắt đầu bằng nội dung lúc gửi request
-        if (!e || e.speaker !== j.speaker || e.src !== j.baseSrc) return;
-        if (!(lastSegments[j.i]?.text || '').startsWith(j.fullSrc)) return;
-        const dst = (parts[k] || '').trim();
-        if (dst) {
-          e.dst     = (e.dst ? e.dst + ' ' : '') + dst;
-          e.src     = j.fullSrc;
-          e.pending = '';
-          e.tries   = 0;
-          return;
-        }
-        // AI thiếu dòng này → thử lại; quá số lần thì giữ nguyên bản gốc
-        e.tries = (e.tries || 0) + 1;
-        if (e.tries >= TRANS_MAX_TRY) {
-          e.dst     = (e.dst ? e.dst + ' ' : '') + j.src;
-          e.src     = j.fullSrc;
-          e.pending = '';
-        }
-      });
-
-      // Segment có thể đã dài thêm trong lúc chờ API — tính lại pending để
-      // phần mới nhất không bị kẹt đến lượt cập nhật sau
-      reconcileTrans();
-
-      if (activeSubTab === 'translate') renderTranslate();
-      else                              renderTransStatus();
-      saveTransSoon();
-      pumpTranslate();   // còn dòng chưa dịch → tiếp tục lô sau
+  jobs.forEach((c, k) => {
+    const dst = (parts[k] || '').trim();
+    if (dst) {
+      c.dst   = dst;
+      c.state = 'done';
+      cachePut(c.src, dst);
+      return;
     }
-  );
+    // AI bỏ sót dòng này → thử lại; quá số lần thì giữ nguyên bản gốc để
+    // người dùng vẫn đọc được và vòng lặp không chạy vô hạn.
+    c.tries++;
+    if (c.tries >= TRANS_MAX_TRY) { c.dst = c.src; c.state = 'done'; }
+    else                          { c.state = 'queued'; }
+  });
+  // Không ghi cache xuống storage ngay ở đây: settle() gọi saveTransSoon(),
+  // nó gom 800ms rồi mới ghi cả bản dịch lẫn cache một lượt.
+}
+
+function failBatch(jobs, msg) {
+  transFailCount++;
+  transError = msg;   // chỉ được xoá khi có lô thành công, để status không im lặng
+  jobs.forEach(c => {
+    c.tries++;
+    // Hết lượt thì hiện bản gốc — thà đọc tiếng Nhật còn hơn treo "đang dịch..."
+    if (c.tries > TRANS_MAX_TRY) { c.dst = c.dst || c.src; c.state = 'done'; }
+    else                         { c.state = 'queued'; }
+  });
+
+  if (transFailCount >= TRANS_MAX_FAIL) {
+    // Bó tay (hết quota, mất mạng…): hiện bản gốc cho MỌI dòng còn chờ. Bản 4.5
+    // để hàng chục dòng treo "đang dịch..." vô thời hạn — đúng cảnh user gặp.
+    // Muốn thử tiếp thì bấm "Dịch lại".
+    allChunks().forEach(c => {
+      if (c.state === 'queued' || c.state === 'sending') {
+        c.dst   = c.dst || c.src;
+        c.state = 'done';
+      }
+    });
+    return;
+  }
+  clearTimeout(transRetryTimer);
+  transRetryTimer = setTimeout(pumpTranslate, TRANS_RETRY_MS);
 }
 
 // Bóc kết quả dạng "#1: ...", "#2: ..." thành mảng n phần tử.
@@ -995,73 +1228,109 @@ function parseNumbered(text, n) {
 }
 
 // ── Render tab Translate — trình bày y như tab Transcript ─────────
+// Render TĂNG DẦN: chỉ dựng lại đúng dòng nào đổi. Bản 4.5 xoá sạch innerHTML
+// rồi dựng lại toàn bộ N dòng mỗi lần caption nhích (~5 lần/giây) nên popup
+// giật rõ khi transcript dài.
+function transRowModels() {
+  const rows = [];
+  transSegs.forEach(s => {
+    if (!s || !s.chunks.length) return;
+    const dst     = s.chunks.filter(c => c.dst).map(c => c.dst).join(' ');
+    const waiting = s.chunks.some(c => c.state === 'queued' || c.state === 'sending');
+    const defer   = s.chunks.some(c => c.state === 'deferred');
+    if (!dst && !waiting && !defer) return;
+    rows.push({ speaker: s.speaker, text: dst, waiting, defer, interim: false });
+  });
+  // Câu đang nói — hiện bản gốc, sẽ được dịch khi chốt câu
+  if (lastInterim?.text) {
+    rows.push({ speaker: lastInterim.speaker, text: lastInterim.text,
+                waiting: false, defer: false, interim: true });
+  }
+  return rows;
+}
+
+function rowSig(r) {
+  return [r.speaker, r.text, r.waiting ? 1 : 0, r.defer ? 1 : 0, r.interim ? 1 : 0].join('|');
+}
+
+function buildTransRow(r) {
+  const row = document.createElement('div');
+  row.className = 'speaker-line';
+
+  const badge = document.createElement('span');
+  badge.className = `spk-badge ai-speaker-${colorFor(r.speaker, lastSpeakerMap)}`
+                  + (r.interim ? ' spk-interim' : '');
+  badge.textContent = r.speaker + ':';   // tên người nói giữ nguyên, không dịch
+  row.appendChild(badge);
+
+  if (r.text) {
+    const txt = document.createElement('span');
+    txt.className = r.interim ? 'tr-src' : 'tr-text';
+    txt.textContent = ' ' + r.text;
+    row.appendChild(txt);
+  }
+  if (r.waiting || r.defer) {
+    const wait = document.createElement('span');
+    wait.className = 'tr-wait';
+    wait.textContent = ' ' + (r.waiting ? 'đang dịch...' : '(chưa dịch)');
+    row.appendChild(wait);
+  }
+  return row;
+}
+
 function renderTranslate() {
   const box = document.getElementById('translateBox');
   if (!box) { renderTransStatus(); return; }
 
-  const rows = transEntries.filter(e => e.dst || e.pending);
-  if (!rows.length && !lastInterim) {
-    box.innerHTML = '<span class="placeholder">Chưa có nội dung để dịch...</span>';
+  const rows = transRowModels();
+  if (!rows.length) {
+    if (transRows.length) {
+      box.innerHTML = '<span class="placeholder">Chưa có nội dung để dịch...</span>';
+      transRows = [];
+    }
     renderTransStatus();
     return;
   }
 
-  const frag = document.createDocumentFragment();
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  if (!transRows.length) box.innerHTML = '';   // bỏ placeholder trước khi chèn dòng đầu
 
-  rows.forEach(e => {
-    const row = document.createElement('div');
-    row.className = 'speaker-line';
-    const badge = document.createElement('span');
-    badge.className = `spk-badge ai-speaker-${colorFor(e.speaker, lastSpeakerMap)}`;
-    badge.textContent = e.speaker + ':';   // tên người nói giữ nguyên, không dịch
-    row.appendChild(badge);
-    if (e.dst) {
-      const txt = document.createElement('span');
-      txt.className = 'tr-text';
-      txt.textContent = ' ' + e.dst;
-      row.appendChild(txt);
-    }
-    if (e.pending) {
-      const wait = document.createElement('span');
-      wait.className = 'tr-wait';
-      wait.textContent = e.dst ? ' (đang dịch...)' : ' đang dịch...';
-      row.appendChild(wait);
-    }
-    frag.appendChild(row);
-  });
-
-  // Câu đang nói (interim) — hiển thị bản gốc, sẽ được dịch khi chốt câu
-  if (lastInterim?.text) {
-    const row = document.createElement('div');
-    row.className = 'speaker-line';
-    const badge = document.createElement('span');
-    badge.className = `spk-badge ai-speaker-${colorFor(lastInterim.speaker, lastSpeakerMap)} spk-interim`;
-    badge.textContent = lastInterim.speaker + ':';
-    const txt = document.createElement('span');
-    txt.className = 'tr-src';
-    txt.textContent = ' ' + lastInterim.text;
-    row.appendChild(badge);
-    row.appendChild(txt);
-    frag.appendChild(row);
+  for (let i = 0; i < rows.length; i++) {
+    const sig = rowSig(rows[i]);
+    const old = transRows[i];
+    if (old && old.sig === sig) continue;
+    const el = buildTransRow(rows[i]);
+    if (old) box.replaceChild(el, old.el);
+    else     box.appendChild(el);
+    transRows[i] = { sig, el };
+  }
+  while (transRows.length > rows.length) {
+    const extra = transRows.pop();
+    if (extra?.el) box.removeChild(extra.el);
   }
 
-  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
-  box.innerHTML = '';
-  box.appendChild(frag);
   if (atBottom) box.scrollTop = box.scrollHeight;
-
   renderTransStatus();
 }
 
 function renderTransStatus() {
+  const deferred = countChunks(['deferred']);
+  const backfill = document.getElementById('backfillTransBtn');
+  if (backfill) {
+    backfill.style.display = deferred ? '' : 'none';
+    backfill.title = `Dịch nốt ${deferred} dòng cũ chưa dịch`;
+    const label = document.getElementById('backfillTransLabel');
+    if (label) label.textContent = `Dịch phần cũ (${deferred})`;
+  }
+
   const el = document.getElementById('translateStatus');
   if (!el) return;
-  const pending = transEntries.filter(e => e.pending).length;
+  const waiting = countChunks(['queued', 'sending']);
   el.className = 'tr-status' + (transError ? ' err' : '');
   el.title     = transError || '';
   if (transError && transFailCount >= TRANS_MAX_FAIL) el.textContent = '⚠ ' + transError;
   else if (transError)                                el.textContent = '⚠ Lỗi, đang thử lại...';
-  else if (transRunning || pending)                   el.textContent = 'Đang dịch' + (pending > 1 ? ` (${pending})` : '') + '...';
+  else if (waiting)                                   el.textContent = `Đang dịch (${waiting})...`;
   else                                                el.textContent = '';
 }
 
@@ -1078,12 +1347,13 @@ function setSubTab(name) {
   document.getElementById('translateFooter').style.display  = isTr ? ''     : 'none';
 
   if (isTr) {
-    if (!transEnabled) { transEnabled = true; saveTransSoon(); }
+    transEnabled   = true;
     transFailCount = 0;
     transError     = '';
     reconcileTrans();
+    saveTransSoon();
     renderTranslate();
-    pumpTranslate();
+    pumpTranslate();   // mở tab là dịch ngay, không chờ hết debounce
   }
 }
 
@@ -1091,16 +1361,30 @@ document.querySelectorAll('.sub-tab').forEach(btn => {
   btn.addEventListener('click', () => setSubTab(btn.dataset.sub));
 });
 
+// ── Dịch nốt phần cũ đã bị hoãn ──────────────────────────────────
+document.getElementById('backfillTransBtn')?.addEventListener('click', () => {
+  undeferAll();
+  transFailCount = 0;
+  transError     = '';
+  renderTranslate();
+  pumpTranslate();
+});
+
 // ── Dịch lại toàn bộ ─────────────────────────────────────────────
 document.getElementById('retranslateBtn').addEventListener('click', () => {
   showConfirm('Dịch lại toàn bộ nội dung?', () => {
     clearTimeout(transRetryTimer);
-    transEntries = transEntries.map(e => ({
-      speaker: e.speaker, src: '', dst: '', pending: '', tries: 0
-    }));
+    transInflight  = new Map();
     transFailCount = 0;
     transError     = '';
-    reconcileTrans();
+    transBacklogChecked = true;   // user chủ động yêu cầu → dịch hết, không hoãn
+    transSegs.forEach(s => s.chunks.forEach(c => {
+      transCache.delete(cacheKeyOf(c.src));   // dịch lại thật, không nhận lại bản cũ từ cache
+      c.dst   = '';
+      c.state = 'queued';
+      c.tries = 0;
+    }));
+    transRows = [];
     renderTranslate();
     pumpTranslate();
   });
@@ -1108,9 +1392,10 @@ document.getElementById('retranslateBtn').addEventListener('click', () => {
 
 // ── Bản dịch dạng text (dùng cho Copy / Tải) ─────────────────────
 function translateAsText() {
-  return transEntries
-    .filter(e => e.dst)
-    .map(e => `${e.speaker}: ${e.dst}`)
+  return transSegs
+    .map(s => ({ speaker: s.speaker, dst: s.chunks.filter(c => c.dst).map(c => c.dst).join(' ') }))
+    .filter(r => r.dst)
+    .map(r => `${r.speaker}: ${r.dst}`)
     .join('\n');
 }
 
@@ -1130,7 +1415,7 @@ document.getElementById('dlTranslateBtn').addEventListener('click', () => {
   const platform = mode.includes('meet') ? 'GoogleMeet' : mode.includes('teams') ? 'Teams' : mode.includes('zoom') ? 'Zoom' : 'Meeting';
   const date     = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}`;
   const time     = `${pad(now.getHours())}${pad(now.getMinutes())}`;
-  const speakers = [...new Set(transEntries.filter(e => e.dst).map(e => e.speaker))];
+  const speakers = [...new Set(transSegs.filter(s => s.chunks.some(c => c.dst)).map(s => s.speaker))];
   const header   = [
     '='.repeat(50),
     `Meeting Translation (Tiếng Việt) — ${platform}`,

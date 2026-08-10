@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Meeting Assistant",
-  "version": "4.5",
+  "version": "4.6",
   "description": "Real-time Japanese meeting assistant with speaker diarization and standby capture.",
   "permissions": [
     "activeTab",
