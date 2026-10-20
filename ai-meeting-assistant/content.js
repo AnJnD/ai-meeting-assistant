@@ -60,18 +60,28 @@ function detectPlatform() {
 // GOOGLE MEET — caption DOM scraper
 // ════════════════════════════════════════════════════════════════
 const MEET_SELECTORS = {
+  // Marker CHỈ có khi Meet đã bật phụ đề. Danh sách này là căn cứ duy nhất để
+  // kết luận "CC đang bật", nên mọi selector ở đây phải đặc trưng cho khung phụ đề.
+  //
+  // ĐÃ BỎ (nguyên nhân icon CC hiện xanh dù user không bật CC):
+  //   [data-allocation-index] — thuộc tính của Ô VIDEO người tham gia, có mặt
+  //                             suốt buổi họp
+  //   [data-use-tooltip]      — nút bấm trên thanh điều khiển
+  //   [jsname="xsSM3d"]       — không phải khung phụ đề (khớp cả khi CC tắt)
+  //   [aria-label*="caption"] — khớp NÚT "Turn on captions" trên toolbar, tức là
+  //                             khớp đúng lúc CC đang TẮT. Nay xử lý riêng ở
+  //                             strategy 2 với bộ lọc loại bỏ nút/menu.
+  // Thứ tự có ý nghĩa: marker của KHUNG NGOÀI đứng trước marker của danh sách
+  // lời nói bên trong. Gắn observer vào khung ngoài thì Meet dựng lại danh sách
+  // bên trong vẫn theo dõi được.
   container: [
-    // Attribute selectors (jsname/jscontroller change with Meet updates — keep adding new ones)
-    '[jsname="tgaKEf"]','[jsname="r4nke"]','[jscontroller="TEtAUc"]',
-    '[jsname="dsyhDe"]','[jsname="xsSM3d"]','[jsname="r1xuRe"]','[jsname="WbE0Tb"]',
-    '[jsname="DzpKZ"]','[jsname="K4t3lf"]','[jsname="Xp8aoc"]',
     // Class / id selectors
-    '.a4cQT','.iOzk7','[data-is-live-captions]','[data-allocation-index]',
-    '[data-caption-track]','[data-use-tooltip]',
-    // Aria / id selectors
-    '[aria-label*="caption" i]','[aria-label*="phụ đề" i]','[aria-label*="字幕" i]',
-    '[aria-label*="transcript" i]',
+    '.a4cQT','.iOzk7','[data-is-live-captions]','[data-caption-track]',
     '#captions-area','#closed-captions','#caption-window',
+    // Attribute selectors (jsname/jscontroller change with Meet updates — keep adding new ones)
+    '[jsname="tgaKEf"]','[jscontroller="TEtAUc"]',
+    '[jsname="dsyhDe"]','[jsname="r1xuRe"]','[jsname="WbE0Tb"]',
+    '[jsname="DzpKZ"]',
   ],
   utterance: [
     '[jsname="YSxPC"]','[data-message-id]','.TBnnIe',
@@ -174,37 +184,119 @@ function trySelect(parent, list) {
   return null;
 }
 
-function findMeetContainer() {
-  // Strategy 1: known attribute/class selectors
-  for (const s of MEET_SELECTORS.container) {
-    try { const e = document.querySelector(s); if (e) return e; } catch(_) {}
-  }
-  // Strategy 2: aria-label on region/log/status roles
-  for (const r of document.querySelectorAll('[role="region"],[role="log"],[role="status"]')) {
-    const l = (r.getAttribute('aria-label') || '').toLowerCase();
-    if (l.includes('caption') || l.includes('subtitle') || l.includes('字幕') || l.includes('transcript')) return r;
-  }
-  // Strategy 3: aria-live elements (Meet uses these for accessibility on caption containers)
-  for (const el of document.querySelectorAll('[aria-live="polite"],[aria-live="assertive"]')) {
-    const text = (el.innerText || '').trim();
-    if (text.length < 5 || text.length > 4000) continue;
+// Loại bỏ những thứ CHẮC CHẮN không phải khung phụ đề. Không có bộ lọc này thì
+// nút bấm trên toolbar và ô video đều được nhận là "khung phụ đề" → captionMode
+// thành 'meet-cc' dù user chưa bật CC: popup hiện icon CC xanh, nhánh Microphone
+// dự phòng KHÔNG chạy, và transcript đứng ở "Đang chờ người nói..." vĩnh viễn.
+function isPlausibleMeetCaptionBox(el) {
+  if (!el || el === document.body || el === document.documentElement) return false;
+  try {
+    // Bản thân là control, hoặc nằm trong nút / menu / hộp thoại (nút "Turn on
+    // captions" có aria-label chứa "captions" và tồn tại đúng khi CC đang tắt)
+    if (el.matches?.('button,[role="button"],[role="menuitem"],[role="tab"],[role="checkbox"],input,textarea,a,video,canvas')) return false;
+    if (el.closest?.('button,[role="button"],[role="menu"],[role="menubar"],[role="dialog"]')) return false;
+    // Ô video người tham gia (thuộc tính này có suốt buổi họp, kể cả CC tắt)
+    if (el.hasAttribute?.('data-allocation-index') || el.closest?.('[data-allocation-index]')) return false;
+    if (el.querySelector?.('video,canvas,input,textarea')) return false;
+
     const rect = el.getBoundingClientRect();
     const cs   = window.getComputedStyle(el);
-    if (rect.width < 100 || rect.height < 20) continue;
-    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+    if (rect.width < 80 || rect.height < 12) return false;
+  } catch(_) { return false; }
+  return true;
+}
+
+// Chuỗi này có giống LỜI NÓI không? Chỉ "có chữ" là chưa đủ: danh sách người
+// tham gia (khớp [data-participant-id] trong MEET_SELECTORS.utterance) và tên
+// dưới ô video cũng có chữ — mà chúng có mặt cả khi CC tắt.
+function looksLikeMeetUtterance(t) {
+  const lines = String(t || '').split('\n').map(l => l.trim()).filter(l => l && !isMeetUIText(l));
+  if (!lines.length) return false;
+  if (lines.length >= 2) return true;                        // "Tên người nói" + lời nói
+  return lines[0].length >= 8 && !looksLikeSpeakerName(lines[0]);   // một dòng: phải là câu, không phải tên
+}
+
+// Nội dung trong el có GIỐNG phụ đề không? Dùng cho các nhánh suy đoán: chỉ dựa
+// vào "có chữ ở nửa dưới màn hình" là không đủ — thanh công cụ và tên người trong
+// ô video cũng thoả điều kiện đó.
+function hasMeetCaptionText(el) {
+  try {
+    // Bằng chứng mạnh: có node lời nói thật bên trong
+    for (const sel of MEET_SELECTORS.utterance) {
+      for (const node of el.querySelectorAll(sel)) {
+        if (looksLikeMeetUtterance(node.innerText || node.textContent || '')) return true;
+      }
+    }
+    // Bằng chứng yếu: khối chữ có DẠNG phụ đề — "Tên người nói" rồi tới lời nói.
+    // Bắt buộc phải có dòng tên, nếu không thì mọi thông báo aria-live của Meet
+    // ("You're the only one here") đều bị nhận là phụ đề.
+    const raw = stripMeetSettingsHeader((el.innerText || '').trim());
+    if (raw.length < 8 || raw.length > 4000) return false;
+    const lines = raw.split('\n').map(l => l.trim()).filter(l => l && !isMeetUIText(l));
+    if (lines.length < 2) return false;
+    return looksLikeSpeakerName(lines[0]);
+  } catch(_) { return false; }
+}
+
+// Trèo lên tổ tiên NGOÀI CÙNG vẫn còn là marker khung phụ đề. Meet lồng nhiều
+// lớp ([jsname="dsyhDe"] nằm trong .a4cQT): gắn observer vào lớp ngoài thì Meet
+// dựng lại danh sách lời nói bên trong vẫn theo dõi được.
+function outermostMeetCaptionBox(el) {
+  let best = el;
+  for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+    const hit = MEET_SELECTORS.container.some(s => { try { return n.matches?.(s); } catch(_) { return false; } });
+    if (hit && isPlausibleMeetCaptionBox(n)) best = n;
+  }
+  return best;
+}
+
+// Tìm khung phụ đề Meet. Trả về null khi CC chưa bật — nhờ vậy startMeetScraper()
+// đi xuống nhánh Microphone và icon CC trong popup báo đúng trạng thái.
+function findMeetContainer() {
+  // Strategy 1: marker riêng của khung phụ đề (chỉ có khi CC bật).
+  // Quét querySelectorAll chứ không phải querySelector: nếu node ĐẦU TIÊN khớp
+  // selector lại là thứ bị loại (ẩn, nằm trong nút…) thì vẫn còn cơ hội xét
+  // những node sau, thay vì bỏ luôn cả selector.
+  for (const s of MEET_SELECTORS.container) {
+    try {
+      for (const e of document.querySelectorAll(s)) {
+        if (isPlausibleMeetCaptionBox(e)) return outermostMeetCaptionBox(e);
+      }
+    } catch(_) {}
+  }
+  // Strategy 2: aria-label / role nói rõ đây là vùng phụ đề. Nút bấm và menu đã
+  // bị isPlausibleMeetCaptionBox() loại, nên "Turn on captions" không còn khớp.
+  const labelled = '[role="region"],[role="log"],[role="status"],[aria-label],[aria-labelledby]';
+  for (const r of document.querySelectorAll(labelled)) {
+    const l = (r.getAttribute('aria-label') || '').toLowerCase();
+    if (!/caption|subtitle|phụ đề|字幕|transcript/i.test(l)) continue;
+    if (!isPlausibleMeetCaptionBox(r)) continue;
+    return r;
+  }
+  // Strategy 3: vùng aria-live CÓ nội dung giống phụ đề. Meet dùng aria-live cho
+  // cả thông báo hệ thống ("You're the only one here") nên phải xét nội dung.
+  for (const el of document.querySelectorAll('[aria-live="polite"],[aria-live="assertive"]')) {
+    if (!isPlausibleMeetCaptionBox(el)) continue;
+    if (!hasMeetCaptionText(el)) continue;
     return el;
   }
-  // Strategy 4: position heuristic — relaxed (any language, lower 60% of screen)
-  for (const d of document.querySelectorAll('div')) {
-    if (d.children.length < 1 || d.children.length > 20) continue;
-    const rect = d.getBoundingClientRect();
-    const cs   = window.getComputedStyle(d);
-    if (rect.top    < window.innerHeight * 0.35) continue;
-    if (rect.height < 24 || rect.width < 100)    continue;
-    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-    const text = (d.innerText || '').trim();
-    // Accept any visible text in the lower portion of the page
-    if (text.length > 3 && text.length < 4000) return d;
+  // Strategy 4: lưới an toàn khi Meet đổi DOM — đi từ CHÍNH node lời nói ngược
+  // lên khung chứa nó, thay vì đoán theo vị trí trên màn hình.
+  //
+  // Bản cũ ở đây là "div nào ở nửa dưới màn hình mà có chữ" — thanh điều khiển,
+  // tên người trong ô video, hộp emoji… đều khớp, nên hầu như LÚC NÀO cũng tìm
+  // ra "khung phụ đề". Đó chính là lỗi icon CC xanh khi CC đang tắt.
+  for (const sel of MEET_SELECTORS.utterance) {
+    let nodes; try { nodes = document.querySelectorAll(sel); } catch(_) { continue; }
+    for (const node of nodes) {
+      if (!looksLikeMeetUtterance(node.innerText || node.textContent || '')) continue;
+      // Lấy KHUNG CHỨA chứ không phải chính node lời nói: lượt nói sau được Meet
+      // thêm vào như node em, observer gắn vào node lẻ sẽ không thấy chúng.
+      for (let box = node.parentElement; box && box !== document.body; box = box.parentElement) {
+        if (isPlausibleMeetCaptionBox(box)) return box;
+      }
+    }
   }
   return null;
 }
@@ -252,6 +344,10 @@ function parseMeetCaption(node) {
 function startMeetScraper() {
   if (captureActive && captionMode === 'meet-cc' && captionObserver) return;
   const container = findMeetContainer();
+  // Bật localStorage.setItem('mt_debug','1') trên tab họp để xem extension quyết
+  // định thế nào — hữu ích khi cần đối chiếu icon CC trong popup với thực tế.
+  mtDebug('meet: CC', container ? 'BẬT → meet-cc' : 'TẮT → meet-mic',
+          container ? '(' + (container.className || container.tagName) + ')' : '');
   if (container) {
     captionMode = 'meet-cc';
     attachMeetObserver(container);
@@ -261,16 +357,75 @@ function startMeetScraper() {
   }
   captionMode = 'meet-mic';
   startWebSpeechSilent();
-  const poll = setInterval(() => {
-    if (!isRecognizing) { clearInterval(poll); return; }
-    const c = findMeetContainer();
-    if (c) { clearInterval(poll); switchToCC('meet', c); }
-  }, 1500);
+  startCCPoll('meet', findMeetContainer, 1500);
+}
+
+// Chống ghi lặp ở nhánh text fallback của Meet. Khung phụ đề hiện vài dòng gần
+// nhất và CUỘN: dòng cũ trôi khỏi đầu, dòng mới thêm vào cuối. Bản cũ nhớ theo
+// "tên:::chữ" — người nói lặp lại đúng câu cũ ("はい、わかりました。") là bị nuốt,
+// còn tạo bộ nhớ mới mỗi lần gắn observer thì khung dựng lại bị ghi lặp.
+// Nay so ảnh chụp các dòng với ảnh lần trước theo VỊ TRÍ (dò độ cuộn), nên:
+//   - cùng câu ở hai vị trí khác nhau là hai lượt nói khác nhau;
+//   - gắn lại vào khung mới (còn hiện dòng cũ) khớp ảnh cũ → không ghi lại.
+// meetFallbackBase / meetInterimSpeaker cũng giữ qua lần gắn lại (khối lời nói của
+// Meet kéo dài qua lần dựng lại; base chỉ dùng khi chữ mới BẮT ĐẦU bằng nó).
+let meetInterimSpeaker = '';
+let meetSnapshot       = [];   // [{ speaker, text, done }] — lần xử lý trước
+
+// Các dòng hiện tại khớp với ảnh trước ở đâu? Trả về mảng "đã chốt xong" cho từng
+// dòng hiện tại. Thử độ cuộn s nhỏ nhất mà mọi dòng chồng lên nhau đều khớp.
+// Dòng cuối ảnh trước là dòng đang nói: nó dài thêm hoặc bị nhận dạng lại
+// ("Can you" → "Could you share it?") — chỉ cần cùng người nói là khớp, nếu
+// không mọi dòng cũ trên màn hình bị coi là mới và ghi lại.
+function alignCaptionSnapshot(prev, lines) {
+  for (let s = 0; s < prev.length; s++) {
+    let ok = true, overlap = 0;
+    for (let i = 0; i < lines.length && i + s < prev.length; i++) {
+      const p = prev[i + s], l = lines[i];
+      const same = p.speaker === l.speaker && p.text === l.text;
+      const growing = i + s === prev.length - 1 && p.speaker === l.speaker;
+      if (!same && !growing) { ok = false; break; }
+      overlap++;
+    }
+    if (ok && overlap) {
+      return lines.map((l, i) => {
+        const p = prev[i + s];
+        return !!(p && p.done && p.speaker === l.speaker && p.text === l.text);
+      });
+    }
+  }
+  return lines.map(() => false);
+}
+
+function resetCaptionDedupState() {
+  meetFallbackBase   = '';
+  meetInterimSpeaker = '';
+  meetSnapshot       = [];
+  for (const k of Object.keys(meetSeenHistory)) delete meetSeenHistory[k];
+  zoomPrevAttach     = null;
+}
+
+// Rình phụ đề trong lúc chạy mic dự phòng. Chỉ giữ MỘT poll: bản cũ tạo
+// interval mới ở mỗi chỗ rơi về mic, không lưu id — Stop→Start nhanh hay
+// standby gắn CC trước là có poll thứ hai gọi switchToCC, gắn observer lần nữa.
+let ccPollTimer = null;
+function stopCCPoll() { clearInterval(ccPollTimer); ccPollTimer = null; }
+function startCCPoll(platform, finder, ms) {
+  stopCCPoll();
+  ccPollTimer = setInterval(() => {
+    if (!isRecognizing) { stopCCPoll(); return; }
+    // Đã có observer CC (do nơi khác gắn) → poll hết việc
+    if (captureActive && captionObserver && String(captionMode).endsWith('-cc')) { stopCCPoll(); return; }
+    const c = finder();
+    if (c) { stopCCPoll(); switchToCC(platform, c); }
+  }, ms);
 }
 
 function attachMeetObserver(container) {
   if (captionObserver) captionObserver.disconnect();
-  meetFallbackBase = ''; // reset on every (re)attach
+  meetCaptionContainer = container;
+  let meetLastRaw = '';
+
   captionObserver = new MutationObserver(() => {
     lastActivityTime = Date.now();
     let found = false;
@@ -283,7 +438,15 @@ function attachMeetObserver(container) {
           const { speaker, text } = parseMeetCaption(node);
           if (!text || text.length < 2) return;
           if (meetIsDuplicate(speaker, text)) return;
-          interimSegment = { speaker, text };
+          // Delta tracking như nhánh fallback: interim giờ có thể bị chốt
+          // giữa chừng (INTERIM_MAX_HOLD_MS), nếu không trừ phần đã chốt thì
+          // node đang lớn dần sẽ bị ghi lại từ đầu → transcript nhân đôi.
+          if (speaker !== meetInterimSpeaker) {
+            meetFallbackBase   = '';
+            meetInterimSpeaker = speaker;
+          }
+          if (meetFallbackBase && !text.startsWith(meetFallbackBase)) meetFallbackBase = '';
+          interimSegment = { speaker, text, fallbackBase: meetFallbackBase };
         });
         scheduleCommitInterim();
         break;
@@ -296,50 +459,174 @@ function attachMeetObserver(container) {
       // Strip CC settings toolbar (e.g. "language Japanese … Open caption settings")
       const stripped = stripMeetSettingsHeader(raw);
       if (!stripped || stripped.length < 2) { saveToLiveStorage(); return; }
+      if (stripped === meetLastRaw) { saveToLiveStorage(); return; }
+      meetLastRaw = stripped;
 
-      // Extract speaker name + caption text
-      const { speaker, text } = extractMeetFallbackSpeaker(stripped);
-      if (!text || text.length < 2 || isMeetUIText(text)) { saveToLiveStorage(); return; }
+      // innerText của khung CC chứa NHIỀU lượt nói của nhiều người. Bản cũ gọi
+      // extractMeetFallbackSpeaker() nên chỉ lấy được cái tên đầu tiên rồi dồn
+      // toàn bộ phần còn lại (kể cả tên người khác) vào một segment duy nhất —
+      // đúng cảnh transcript Meet dính thành một khối. Tách như Teams/Zoom.
+      let lines = splitBySpeak(stripped);
+      if (lines.length === 1 && lines[0].speaker === 'Speaker') {
+        // Không nhận ra tên nào → thử tiếp các mẫu riêng của Meet
+        const p = extractMeetFallbackSpeaker(lines[0].text);
+        if (p.text) lines = [{ speaker: p.speaker, text: p.text }];
+      }
+      lines = lines.filter(l => l.text && l.text.trim().length >= 2 && !isMeetUIText(l.text));
+      if (!lines.length) { saveToLiveStorage(); return; }
 
-      // Skip if text hasn't changed since last interim
-      if (interimSegment?.text === text) { saveToLiveStorage(); return; }
-
-      // If text no longer begins with the committed base → new utterance started, reset
-      if (meetFallbackBase && !text.startsWith(meetFallbackBase)) meetFallbackBase = '';
-
-      // Store fallbackBase so scheduleCommitInterim knows how much to skip
-      interimSegment = { speaker, text, fallbackBase: meetFallbackBase };
-      scheduleCommitInterim();
+      const doneFlags = alignCaptionSnapshot(meetSnapshot, lines);
+      const snap = lines.map((l, i) => ({ speaker: l.speaker, text: l.text, done: doneFlags[i] }));
+      meetSnapshot = snap;
+      lines.forEach((line, idx) => {
+        if (snap[idx].done) return;
+        if (idx < lines.length - 1) {
+          // Lượt nói cũ (đã có lượt mới phía dưới) → chốt ngay, không chờ
+          snap[idx].done = true;
+          let textToCommit = line.text;
+          if (line.speaker === meetInterimSpeaker && meetFallbackBase &&
+              line.text.startsWith(meetFallbackBase)) {
+            textToCommit     = line.text.slice(meetFallbackBase.length).trim();
+            meetFallbackBase = '';
+          }
+          if (textToCommit) {
+            addFinalSegment(line.speaker, textToCommit);
+            syncTranscript();
+          }
+          return;
+        }
+        // Lượt đang nói
+        if (line.speaker !== meetInterimSpeaker) {
+          meetFallbackBase   = '';
+          meetInterimSpeaker = line.speaker;
+        }
+        if (meetFallbackBase && !line.text.startsWith(meetFallbackBase)) meetFallbackBase = '';
+        interimSegment = {
+          speaker: line.speaker,
+          text:    line.text,
+          fallbackBase: meetFallbackBase,
+          _onCommit: (spk, _delta, fullText) => {
+            // Ảnh chụp vẫn là ảnh mới nhất → đánh dấu dòng này đã chốt xong
+            const cur = meetSnapshot[idx];
+            if (cur && cur.speaker === spk && cur.text === fullText) cur.done = true;
+            meetFallbackBase   = fullText;
+            meetInterimSpeaker = spk;
+          }
+        };
+        scheduleCommitInterim();
+      });
     }
     saveToLiveStorage();
   });
   captionObserver.observe(container, { childList: true, subtree: true, characterData: true });
+  startMeetCCWatchdog();
 }
 
-function scheduleCommitInterim() {
-  clearTimeout(commitTimer);
-  commitTimer = setTimeout(() => {
-    if (!interimSegment) return;
-    let textToCommit = interimSegment.text;
-    // Delta tracking: only commit new text since last committed base
-    if (interimSegment.fallbackBase !== undefined) {
-      if (interimSegment.fallbackBase && textToCommit.startsWith(interimSegment.fallbackBase)) {
-        textToCommit = textToCommit.slice(interimSegment.fallbackBase.length).trim();
+// ── Watchdog cho chế độ CC ──────────────────────────────────────
+// Bật CC rồi tắt lại giữa buổi (hoặc Meet dựng lại DOM) thì khung phụ đề biến
+// mất, nhưng captionMode vẫn là 'meet-cc': popup báo "CC đang hoạt động" trong
+// khi không có dòng nào chạy vào, và nhánh Microphone dự phòng không hề chạy.
+// Watchdog phát hiện chuyện đó rồi quay về Microphone, đồng thời tiếp tục rình
+// để nhảy lại sang CC ngay khi user bật phụ đề.
+const CC_WATCHDOG_MS   = 3000;
+const CC_MISS_TO_FALLBACK = 2;   // 2 lần liên tiếp không thấy khung ≈ 6s, tránh
+                                 // rơi xuống mic chỉ vì Meet re-render một nhịp
+let ccWatchdog = null;
+let ccMissCount = 0;
+let meetCaptionContainer = null;   // khung phụ đề Meet observer đang bám vào
+
+function stopMeetCCWatchdog() {
+  clearInterval(ccWatchdog); ccWatchdog = null; ccMissCount = 0;
+}
+
+function startMeetCCWatchdog() {
+  stopMeetCCWatchdog();
+  ccWatchdog = setInterval(() => {
+    if (!captureActive || captionMode !== 'meet-cc') { stopMeetCCWatchdog(); return; }
+    const found = findMeetContainer();
+    if (found) {
+      ccMissCount = 0;
+      // Meet dựng lại khung phụ đề bằng node MỚI: khung vẫn "tìm thấy" nhưng
+      // observer còn bám vào node cũ đã bị gỡ → không dòng nào chạy vào nữa.
+      if (found !== meetCaptionContainer && !isAttachedNode(meetCaptionContainer)) {
+        mtDebug('meet: khung phụ đề được dựng lại → gắn observer vào khung mới');
+        commitInterimNow();
+        attachMeetObserver(found);
       }
-      // Meet CC (no _onCommit): advance global meetFallbackBase here
-      if (!interimSegment._onCommit) meetFallbackBase = interimSegment.text;
+      return;
     }
-    if (textToCommit && textToCommit.trim().length >= 2) {
-      addFinalSegment(interimSegment.speaker, textToCommit);
-      syncTranscript();
+    if (++ccMissCount < CC_MISS_TO_FALLBACK) return;
+
+    stopMeetCCWatchdog();
+    if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+    meetCaptionContainer = null;
+    commitInterimNow();
+
+    // Standby (user chưa bấm Start): KHÔNG được bật mic. Bản cũ gọi
+    // startWebSpeechSilent() cả ở đây → micro chạy ngầm, còn poll quay lại CC
+    // thoát ngay vì isRecognizing = false nên không bao giờ rình CC lại nữa.
+    if (!isRecognizing) {
+      mtDebug('meet: khung phụ đề đã biến mất (standby) → quay lại chờ CC');
+      captureActive = false;
+      captionMode = null;
+      saveToLiveStorage();
+      startStandbyCapture();
+      return;
     }
-    // Post-commit callback (Teams: register in processedKeys + advance base)
-    if (typeof interimSegment._onCommit === 'function') {
-      interimSegment._onCommit(interimSegment.speaker, textToCommit, interimSegment.text);
-    }
-    interimSegment = null;
+
+    // CC đã tắt → chuyển về mic, báo đúng trạng thái cho popup
+    mtDebug('meet: khung phụ đề đã biến mất → quay về meet-mic');
+    captionMode = 'meet-mic';
     saveToLiveStorage();
-  }, 2500);
+    startWebSpeechSilent();
+    startCCPoll('meet', findMeetContainer, 1500);
+  }, CC_WATCHDOG_MS);
+}
+
+// Chốt interim: bình thường chờ 2.5s im lặng, NHƯNG không bao giờ chờ quá
+// INTERIM_MAX_HOLD_MS kể từ lần chốt gần nhất.
+//
+// Bản cũ chỉ có clearTimeout + hẹn lại 2.5s. Trong cuộc họp có người nói liên
+// tục, caption DOM đổi vài lần mỗi giây nên hạn 2.5s bị dời vô tận: không dòng
+// nào được chốt, interim phình lên ôm luôn lời của nhiều người, và tab Translate
+// không có segment nào để dịch (chỉ hiện nguyên văn dòng đang nói).
+const INTERIM_MAX_HOLD_MS = 7000;
+const INTERIM_IDLE_MS     = 2500;
+let   interimStartedAt    = 0;
+
+function scheduleCommitInterim() {
+  if (!interimStartedAt) interimStartedAt = Date.now();
+  clearTimeout(commitTimer);
+  const waited = Date.now() - interimStartedAt;
+  // Hạn cuối là MỐC TUYỆT ĐỐI: interimStartedAt + INTERIM_MAX_HOLD_MS. Không
+  // được đặt sàn cho delay — caption nhích mỗi 200ms mà sàn 400ms thì hạn vẫn
+  // bị dời vô tận, đúng lỗi cần sửa.
+  const delay  = Math.max(0, Math.min(INTERIM_IDLE_MS, INTERIM_MAX_HOLD_MS - waited));
+  commitTimer = setTimeout(commitInterimNow, delay);
+}
+
+function commitInterimNow() {
+  interimStartedAt = 0;
+  if (!interimSegment) return;
+  let textToCommit = interimSegment.text;
+  // Delta tracking: only commit new text since last committed base
+  if (interimSegment.fallbackBase !== undefined) {
+    if (interimSegment.fallbackBase && textToCommit.startsWith(interimSegment.fallbackBase)) {
+      textToCommit = textToCommit.slice(interimSegment.fallbackBase.length).trim();
+    }
+    // Meet CC (no _onCommit): advance global meetFallbackBase here
+    if (!interimSegment._onCommit) meetFallbackBase = interimSegment.text;
+  }
+  if (textToCommit && textToCommit.trim().length >= 2) {
+    addFinalSegment(interimSegment.speaker, textToCommit);
+    syncTranscript();
+  }
+  // Post-commit callback (Teams: register in processedKeys + advance base)
+  if (typeof interimSegment._onCommit === 'function') {
+    interimSegment._onCommit(interimSegment.speaker, textToCommit, interimSegment.text);
+  }
+  interimSegment = null;
+  saveToLiveStorage();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -458,11 +745,7 @@ function startTeamsScraper() {
   }
   captionMode = 'teams-mic';
   startWebSpeechSilent();
-  const poll = setInterval(() => {
-    if (!isRecognizing) { clearInterval(poll); return; }
-    const c = findTeamsContainer();
-    if (c) { clearInterval(poll); switchToCC('teams', c); }
-  }, 1000);
+  startCCPoll('teams', findTeamsContainer, 1000);
 }
 
 function attachTeamsObserver(container) {
@@ -579,8 +862,13 @@ function looksLikeSpeakerName(line) {
   // Full katakana name: with space/・ separator, or 5+ chars
   if (/^[ァ-ヶー]{2,8}[\s　・][ァ-ヶー]{2,8}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
   if (/^[ァ-ヶー]{5,14}(?:\s*[\(（][^\)）]{1,40}[\)）])?$/.test(t)) return true;
-  // Korean name
+  // Korean name. Câu nói ngắn tiếng Hàn (감사합니다, 좋아요, 맞죠, 할까) cũng toàn
+  // Hangul 2–8 âm tiết — loại theo đuôi câu phổ biến trước khi xét là tên.
+  if (/(?:니다|요|죠|까)$/.test(t)) return false;
   if (/^[가-힯]{2,4}[\s　]?[가-힯]{1,4}$/.test(t)) return true;
+  // Họ 1 âm tiết + dấu cách + tên 2 âm tiết (김 민준). Chỉ nhận họ phổ biến và tên
+  // đúng 2 âm tiết — nếu không thì câu ngắn như "네 맞아요", "그 다음" thành "tên".
+  if (/^[김이박최정강조윤장임한오서신권황안송류전홍고문양손배백허유남심노하곽성차주우구민진나지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예경봉][\s　][가-힯]{2}$/.test(t)) return true;
   return false;
 }
 
@@ -653,27 +941,73 @@ function splitBySpeak(raw) {
 // ════════════════════════════════════════════════════════════════
 // ZOOM — caption DOM scraper
 // ════════════════════════════════════════════════════════════════
+// Khung phụ đề của Zoom web client (app.zoom.us/wc/...) là một hộp đen ở giữa
+// phía dưới: mỗi lượt nói = avatar (chữ cái đầu, ví dụ "V") + đoạn chữ. Tên người
+// nói KHÔNG hiện ra dưới dạng chữ — chỉ có chữ cái đầu trên avatar.
+//
+// LỖI CŨ (CC bật mà không bắt được dòng nào):
+//   - Selector đầu danh sách là [aria-label*="caption" i]: khớp NÚT "Captions" /
+//     "Show Captions" trên thanh điều khiển (có mặt suốt buổi họp). querySelector
+//     trả về nút đó → observer gắn vào nút → không bao giờ thấy phụ đề.
+//   - Nhánh cuối "div nào ở nửa dưới màn hình mà có chữ" khớp thanh điều khiển /
+//     tên trong ô video. Đã "tìm thấy" thì captureActive = true, standby ngừng
+//     tìm, và hộp phụ đề thật (Zoom chỉ dựng khi có người nói) bị bỏ qua.
+//   - Zoom gỡ hộp phụ đề khi im lặng rồi dựng hộp MỚI khi có người nói tiếp:
+//     observer vẫn bám vào hộp cũ đã bị gỡ nên từ lượt nói thứ hai trở đi mất hết.
 const ZOOM_SELECTORS = {
+  // Thứ tự có ý nghĩa: marker đặc trưng của hộp phụ đề trước, selector chung sau.
+  // Mọi ứng viên đều phải qua isPlausibleZoomCaptionBox() + có chữ giống phụ đề.
   container: [
-    '[aria-label*="caption" i]',
-    '[aria-label*="transcript" i]',
-    '[aria-label*="closed caption" i]',
+    '.live-transcription-subtitle__box',
+    '#live-transcription-subtitle',
+    '[class*="live-transcription-subtitle"]',
     '[class*="closed-caption"]',
     '[class*="closedCaption"]',
     '[class*="ClosedCaption"]',
     '[class*="caption-window"]',
-    '[class*="transcript"]',
-    '[class*="Transcript"]',
-    '[class*="live-transcription"]',
-    '[id*="caption"]',
-    '[id*="transcript"]',
-    '[class*="closed-caption--"]',
     '[class*="caption-container"]',
-    '[role="log"]',
-    '[role="region"][aria-label*="caption" i]',
-    '[role="region"][aria-label*="transcript" i]',
+    '[class*="subtitle__box"]',
+    '[class*="subtitle-box"]',
+    '[class*="subtitle"]',
+    '[class*="caption"]',
+    '[class*="Caption"]',
+    '[id*="caption"]',
+    '[id*="subtitle"]',
+    '[class*="live-transcription"]',
+    // KHÔNG dùng [class*="transcript"] chung chung: khớp bảng "Full transcript"
+    // bên phải (cả lịch sử hội thoại) — gắn vào đó là ghi lại toàn bộ lịch sử và
+    // bỏ qua hộp phụ đề thật suốt buổi họp.
+  ],
+  // Một lượt nói bên trong hộp phụ đề
+  item: [
+    '[class*="subtitle__item"]',
+    '[class*="subtitle-item"]',
+    '[class*="caption__item"]',
+    '[class*="caption-item"]',
+    '[class*="captionItem"]',
+    '[class*="transcript__item"]',
+    '[class*="transcript-item"]',
+  ],
+  speakerName: [
+    '[class*="display-name"]',
+    '[class*="displayName"]',
+    '[class*="speaker" i]',
+    '[class*="__name"]',
+    '[class*="user-name"]',
+    '[class*="userName"]',
+  ],
+  avatar: [
+    'img',
+    '[class*="avatar" i]',
   ],
 };
+
+// Chữ của nút/menu Zoom — không phải lời nói
+const ZOOM_UI_TEXT = /^(?:show|hide|view|turn on|turn off|enable|disable)?\s*(?:closed\s*)?(?:captions?|subtitles?|full transcript|live transcript|transcript)(?:\s*settings)?$|^(?:字幕|字幕を表示|字幕を非表示|字幕の表示|字幕を隠す|全文書き起こし|全文字幕|文字起こし|ライブ文字起こし|phụ đề|hiện phụ đề|ẩn phụ đề)$/i;
+function isZoomUIText(t) {
+  const s = String(t || '').trim();
+  return !s || (s.length < 60 && ZOOM_UI_TEXT.test(s));
+}
 
 // Bật log chẩn đoán: localStorage.setItem('mt_debug','1')
 function mtDebug(...args) {
@@ -703,57 +1037,344 @@ function collectSearchRoots() {
   return roots;
 }
 
-function findZoomContainer() {
-  const roots = collectSearchRoots();
-  mtDebug('zoom: search roots =', roots.length);
+function zoomWin(el) {
+  return (el && el.ownerDocument && el.ownerDocument.defaultView) || window;
+}
 
-  // Strategy 1: selector list
-  for (const root of roots) {
-    for (const s of ZOOM_SELECTORS.container) {
-      try {
-        const e = root.querySelector(s);
-        if (e) { mtDebug('zoom: hit selector', s, '.' + e.className); return e; }
-      } catch (_) {}
+// Node còn nằm trong trang không? (Zoom gỡ hộp phụ đề khi im lặng)
+function isAttachedNode(el) {
+  if (!el) return false;
+  if (typeof el.isConnected === 'boolean') return el.isConnected;
+  for (let n = el; n; n = n.parentElement) {
+    if (n === document.body || n === document.documentElement) return true;
+  }
+  return false;
+}
+
+const ZOOM_CONTROL_SEL = 'button,[role="button"],[role="menuitem"],[role="menuitemcheckbox"],[role="tab"],[role="checkbox"],[role="switch"],input,textarea,select,a';
+// Khu vực chắc chắn không phải hộp phụ đề — áp dụng cho MỌI ứng viên: thanh điều
+// khiển, menu, khung chat, danh sách người tham gia.
+const ZOOM_EXCLUDED_UI = [
+  '[role="toolbar"]', '[role="menu"]', '[role="menubar"]', '[role="listbox"]',
+  '#wc-footer', '[class*="footer-button"]',
+  '[class*="chat-container"]', '[class*="chat-box"]', '[class*="chat-list"]', '[class*="chat-message"]',
+  '[class*="participants-section"]', '[class*="participants-list"]', '[class*="participants-ul"]',
+].join(',');
+// Vùng bố cục dễ bắt nhầm: ô video (avatar + nhãn tên — tên như "Viet" hay
+// "iPhone của Anh" không bị looksLikeSpeakerName loại), bảng "Full transcript",
+// thanh bên, hộp thoại. CHỈ áp dụng cho ứng viên yếu (selector chung / suy
+// đoán): nếu Zoom đặt hộp .live-transcription-subtitle bên trong một lớp bọc
+// kiểu này thì vẫn phải bắt được.
+const ZOOM_EXCLUDED_LAYOUT = [
+  '[role="dialog"]',
+  '[class*="video-avatar"]', '[class*="avatar-footer"]', '[class*="video-tile"]', '[class*="video-cell"]',
+  '[class*="full-transcript"]', '[class*="transcript-panel"]', '[class*="transcript-container"]',
+  '[class*="sidebar"]', '[class*="side-panel"]', '[class*="sidepanel"]', '[class*="right-panel"]',
+].join(',');
+const ZOOM_EXCLUDED_AREA = ZOOM_EXCLUDED_UI + ',' + ZOOM_EXCLUDED_LAYOUT;
+
+// Hình dạng có thể là hộp phụ đề không (chưa xét chữ bên trong)?
+// strong = khớp class đặc trưng của hộp phụ đề Zoom → bỏ qua ZOOM_EXCLUDED_LAYOUT.
+function isPlausibleZoomCaptionShape(el, strong = false) {
+  if (!el || el === document.body || el === document.documentElement) return false;
+  try {
+    if (el.matches?.(ZOOM_CONTROL_SEL + ',video,canvas')) return false;
+    if (el.closest?.(ZOOM_CONTROL_SEL)) return false;
+    if (el.closest?.(strong ? ZOOM_EXCLUDED_UI : ZOOM_EXCLUDED_AREA)) return false;
+    if (el.querySelector?.('video,canvas,input,textarea')) return false;
+    const rect = el.getBoundingClientRect();
+    const cs   = zoomWin(el).getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+    if (rect.width < 80 || rect.height < 12) return false;
+    // Hộp phụ đề chỉ vài dòng; khối cao gần nửa màn hình là bảng/thanh bên
+    if (rect.height > zoomWin(el).innerHeight * 0.45) return false;
+  } catch (_) { return false; }
+  return true;
+}
+
+// Chữ hiển thị của el, bỏ phần nằm trong nút / control
+function zoomVisibleText(el) {
+  if (!el) return '';
+  try {
+    if (el.matches?.(ZOOM_CONTROL_SEL)) return '';
+    if (!el.querySelector?.(ZOOM_CONTROL_SEL)) return el.innerText || el.textContent || '';
+    return Array.from(el.children || []).map(zoomVisibleText).filter(Boolean).join('\n');
+  } catch (_) { return ''; }
+}
+
+// Nối các dòng bị ngắt hiển thị: tiếng Nhật/Trung không chèn khoảng trắng
+function joinCaptionLines(lines) {
+  let out = '';
+  for (const raw of lines) {
+    const l = raw.trim();
+    if (!l) continue;
+    if (!out) { out = l; continue; }
+    const cjk = /[　-ヿ㐀-鿿＀-￯]/;
+    out += (cjk.test(out.slice(-1)) && cjk.test(l[0])) ? l : ' ' + l;
+  }
+  return out;
+}
+
+// Avatar chỉ có chữ cái đầu ("V") → đổi sang tên đầy đủ nếu trên trang có đúng
+// MỘT người tham gia có tên bắt đầu bằng chữ đó (nhãn tên dưới ô video).
+const zoomInitialCache = new Map();   // initial → { name, at, hit }
+const ZOOM_INITIAL_TTL_MS      = 30000;
+const ZOOM_INITIAL_MISS_TTL_MS = 3000;    // chưa thấy nhãn tên → thử lại sớm (nhãn có thể render sau)
+function resolveZoomInitial(initial, excludeEl) {
+  const key = String(initial || '').trim();
+  if (!key || key.length > 2) return key;
+  const cached = zoomInitialCache.get(key);
+  if (cached && Date.now() - cached.at < (cached.hit ? ZOOM_INITIAL_TTL_MS : ZOOM_INITIAL_MISS_TTL_MS)) return cached.name;
+  const names = new Set();
+  const norm = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd').toUpperCase();
+  const k = norm(key);
+  for (const root of collectSearchRoots()) {
+    let els; try { els = root.querySelectorAll('*'); } catch (_) { continue; }
+    for (const e of els) {
+      if (e.children && e.children.length) continue;
+      if (excludeEl && excludeEl.contains?.(e)) continue;
+      // Tin nhắn chat ("Very good") không phải tên người
+      try { if (e.closest?.('[class*="chat" i]')) continue; } catch (_) {}
+      const t = (e.innerText || e.textContent || '').trim();
+      if (t.length < 2 || t.length > 40 || !looksLikeSpeakerName(t)) continue;
+      const clean = t.replace(/\s*[\(（][^\)）]{1,40}[\)）]$/, '').trim();
+      if (norm(clean).startsWith(k)) names.add(clean);
+      if (names.size > 1) break;
+    }
+    if (names.size > 1) break;
+  }
+  const name = names.size === 1 ? [...names][0] : key;
+  zoomInitialCache.set(key, { name, at: Date.now(), hit: names.size > 0 });
+  return name;
+}
+
+// Tên người nói đã chọn cho từng node lượt nói, giữ suốt đời node đó. Nếu tra
+// lại tên mỗi lần DOM đổi, cache hết hạn hay có người cùng chữ cái đầu vào phòng
+// là tên đổi giữa câu ("VAN SON LE" → "V") → cả câu bị ghi lại dưới tên mới.
+const zoomItemSpeaker = new WeakMap();   // node → { key, speaker }
+
+// Một lượt nói (node item) → { speaker, text }
+function parseZoomItem(item, container) {
+  let speaker = '';
+  const spkEl = trySelect(item, ZOOM_SELECTORS.speakerName);
+  if (spkEl) speaker = (spkEl.innerText || spkEl.textContent || '').trim();
+
+  // Avatar: tên đầy đủ hay nằm ở alt / title / aria-label
+  let avatarEl = null;
+  for (const s of ZOOM_SELECTORS.avatar) {
+    try { avatarEl = item.querySelector(s); } catch (_) {}
+    if (avatarEl) break;
+  }
+  if (!speaker && avatarEl) {
+    for (const a of ['alt', 'title', 'aria-label', 'data-name']) {
+      const v = (avatarEl.getAttribute?.(a) || '').trim();
+      if (v && !/^(?:avatar|user|profile|image|ảnh)$/i.test(v)) { speaker = v; break; }
     }
   }
-  // Strategy 2: aria-label chứa caption/transcript/字幕
-  for (const root of roots) {
-    let els; try { els = root.querySelectorAll('[aria-label]'); } catch (_) { continue; }
-    for (const el of els) {
-      const label = (el.getAttribute('aria-label') || '').toLowerCase();
-      if (label.includes('caption') || label.includes('transcript') || label.includes('字幕')) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 50 && rect.height > 20) { mtDebug('zoom: hit aria-label', label); return el; }
+
+  // Chữ: các dòng của item, bỏ tên người nói, chữ cái avatar và chữ UI
+  const rawLines = zoomVisibleText(item).split('\n').map(l => l.trim()).filter(Boolean);
+  const avatarText = avatarEl ? (avatarEl.innerText || avatarEl.textContent || '').trim() : '';
+  const textLines = [];
+  let initial = '';
+  rawLines.forEach((l, i) => {
+    if (speaker && l === speaker) return;
+    if (avatarText && l === avatarText && l.length <= 2) { initial = l; return; }
+    // Dòng đầu chỉ 1–2 ký tự = chữ cái trên avatar ("V")
+    if (i === 0 && l.length <= 2 && rawLines.length > 1 && /^\p{L}{1,2}$/u.test(l)) { initial = l; return; }
+    // Dòng đầu là tên người nói (Zoom bản có hiện tên)
+    if (i === 0 && !speaker && rawLines.length > 1 && looksLikeSpeakerName(l)) { speaker = l; return; }
+    if (isZoomUIText(l)) return;
+    textLines.push(l);
+  });
+  if (!speaker && initial) {
+    const memo = zoomItemSpeaker.get(item);
+    if (memo && memo.key === initial) speaker = memo.speaker;
+    else {
+      speaker = resolveZoomInitial(initial, container);
+      zoomItemSpeaker.set(item, { key: initial, speaker });
+    }
+  }
+  return { speaker: speaker || 'Speaker', text: joinCaptionLines(textLines) };
+}
+
+// Node có đúng là MỘT lượt nói không? Selector [class*="caption-item"] khớp cả
+// các phần con "caption-item__avatar", "caption-item__text" — phải loại chúng,
+// nếu không avatar và chữ bị tách thành hai "lượt nói" riêng.
+function isZoomItemNode(n) {
+  const cls = String((n && n.getAttribute?.('class')) || '');
+  return cls.split(/\s+/).some(t => /(?:subtitle|caption|transcript)(?:__|-|_)?item$/i.test(t));
+}
+
+// Gắn node lượt nói vào kết quả (không enumerable: JSON / so sánh không thấy)
+function withZoomNode(line, node) {
+  Object.defineProperty(line, 'node', { value: node, enumerable: false });
+  return line;
+}
+
+// Toàn bộ hộp phụ đề → danh sách lượt nói theo thứ tự hiển thị
+function parseZoomCaptionLines(container) {
+  if (!container) return [];
+  // Cách 1: có node lượt nói riêng
+  for (const s of ZOOM_SELECTORS.item) {
+    let items; try { items = Array.from(container.querySelectorAll(s)); } catch (_) { continue; }
+    items = items.filter(isZoomItemNode);
+    // Bỏ item lồng trong item khác
+    items = items.filter(it => !items.some(o => o !== it && o.contains?.(it)));
+    if (!items.length) continue;
+    const out = items.map(it => withZoomNode(parseZoomItem(it, container), it)).filter(l => l.text);
+    if (out.length) return out;
+  }
+  // Cách 2: không có marker item — mỗi con trực tiếp có avatar là một lượt nói
+  const kids = Array.from(container.children || []);
+  const withAvatar = kids.filter(k => {
+    try { return ZOOM_SELECTORS.avatar.some(s => k.querySelector?.(s)); } catch (_) { return false; }
+  });
+  if (withAvatar.length >= 1 && withAvatar.length === kids.length) {
+    const out = withAvatar.map(k => withZoomNode(parseZoomItem(k, container), k)).filter(l => l.text);
+    if (out.length) return out;
+  }
+  // Cách 3: cả hộp là một lượt nói (avatar + chữ) hoặc nhiều dòng "Tên\nlời nói"
+  const single = parseZoomItem(container, container);
+  const rawText = zoomVisibleText(container);
+  const split = splitBySpeak(rawText);
+  if (split.length > 1 && split.every(l => l.speaker !== 'Speaker')) {
+    return split.map(l => ({ speaker: l.speaker, text: l.text })).filter(l => l.text && !isZoomUIText(l.text));
+  }
+  return single.text ? [single] : [];
+}
+
+// Có ít nhất một lượt nói thật (không phải tên, không phải chữ UI) không?
+function hasZoomCaptionText(el) {
+  try {
+    const raw = zoomVisibleText(el).trim();
+    if (raw.length < 2 || raw.length > 4000) return false;
+    return parseZoomCaptionLines(el).some(l => {
+      const t = l.text.trim();
+      if (t.length < 2 || isZoomUIText(t)) return false;
+      // Chỉ là một cái tên (nhãn dưới ô video) thì không phải phụ đề
+      if (looksLikeSpeakerName(t)) return false;
+      return true;
+    });
+  } catch (_) { return false; }
+}
+
+function isPlausibleZoomCaptionBox(el, strong = false) {
+  return isPlausibleZoomCaptionShape(el, strong) && hasZoomCaptionText(el);
+}
+
+const zoomMarkerHit = (n) => ZOOM_SELECTORS.container.some(s => { try { return n.matches?.(s); } catch (_) { return false; } });
+
+// Trèo lên lớp ngoài cùng vẫn là marker hộp phụ đề: Zoom thêm lượt nói mới thành
+// node em của item cũ, observer gắn vào item lẻ sẽ không thấy. Lớp ngoài KHÔNG
+// cần đang hiển thị (opacity không kế thừa: lúc hộp ngoài đang fade, item bên
+// trong vẫn "thấy được") — chỉ cần không phải vùng bị loại / không chứa video.
+function outermostZoomCaptionBox(el) {
+  let best = el;
+  const stop = el.ownerDocument?.body || document.body;
+  for (let n = el.parentElement; n && n !== stop; n = n.parentElement) {
+    if (!zoomMarkerHit(n)) continue;
+    try {
+      const strong = ZOOM_SELECTORS.container.slice(0, ZOOM_STRONG_RANK + 1).some(s => n.matches?.(s));
+      if (n.closest?.(ZOOM_CONTROL_SEL) || n.closest?.(strong ? ZOOM_EXCLUDED_UI : ZOOM_EXCLUDED_AREA)) continue;
+      if (n.querySelector?.('video,canvas,input,textarea')) continue;
+      const rect = n.getBoundingClientRect();
+      if (rect.height > zoomWin(n).innerHeight * 0.45) continue;
+    } catch (_) { continue; }
+    best = n;
+  }
+  return best;
+}
+
+// Hạng của lần tìm gần nhất: số nhỏ = chắc chắn hơn. 0..ZOOM_STRONG_RANK là
+// class đặc trưng của hộp phụ đề Zoom; còn lại là selector chung / suy đoán.
+const ZOOM_STRONG_RANK = ZOOM_SELECTORS.container.indexOf('[class*="subtitle"]') - 1;
+let zoomLastFindRank = Infinity;
+
+// Ứng viên KHÔNG có class đặc trưng chỉ được nhận khi chữ bên trong đã ĐỔI giữa
+// hai lần tìm: phụ đề thì chạy liên tục, còn nhãn tên / ô video / thông báo thì
+// đứng yên. Đây là chốt chặn cuối cho trường hợp bắt nhầm mà các bộ lọc trên
+// chưa lường trước.
+const zoomCandidateText = new WeakMap();   // node → chữ lần thấy trước
+function zoomCandidateChanged(el) {
+  const now  = zoomVisibleText(el);
+  const prev = zoomCandidateText.get(el);
+  zoomCandidateText.set(el, now);
+  return prev !== undefined && prev !== now;
+}
+
+// Tìm hộp phụ đề Zoom. Trả về null khi chưa có phụ đề nào hiển thị — standby /
+// poll sẽ tìm lại sau, thay vì bám nhầm vào nút "Captions" hay thanh điều khiển.
+// skip: bỏ qua node này (và cha/con của nó) — watchdog dùng để tìm ứng viên khác.
+function findZoomContainer(skip) {
+  const roots = collectSearchRoots();
+  mtDebug('zoom: search roots =', roots.length);
+  const skipped = (e) => !!skip && (e === skip || skip.contains?.(e) || e.contains?.(skip));
+  zoomLastFindRank = Infinity;
+
+  // Strategy 1: selector của hộp phụ đề (quét MỌI node khớp, không chỉ node đầu)
+  for (let i = 0; i < ZOOM_SELECTORS.container.length; i++) {
+    const s = ZOOM_SELECTORS.container[i];
+    for (const root of roots) {
+      let els; try { els = root.querySelectorAll(s); } catch (_) { continue; }
+      for (const e of els) {
+        if (!isPlausibleZoomCaptionBox(e, i <= ZOOM_STRONG_RANK)) continue;
+        const box = outermostZoomCaptionBox(e);
+        if (skipped(box)) continue;
+        if (i > ZOOM_STRONG_RANK && !zoomCandidateChanged(box)) continue;
+        mtDebug('zoom: hit selector', s, '.' + (box.className || box.tagName));
+        zoomLastFindRank = i;
+        return box;
       }
     }
   }
-  // Strategy 3: vùng aria-live
+  // Strategy 2: vùng có aria-label / role nói rõ là phụ đề (nút đã bị loại)
+  const labelled = '[role="region"],[role="log"],[role="status"],[aria-label]';
+  for (const root of roots) {
+    let els; try { els = root.querySelectorAll(labelled); } catch (_) { continue; }
+    for (const el of els) {
+      const label = (el.getAttribute('aria-label') || '').toLowerCase();
+      if (!/caption|subtitle|字幕|phụ đề/.test(label)) continue;
+      if (!isPlausibleZoomCaptionBox(el) || skipped(el)) continue;
+      if (!zoomCandidateChanged(el)) continue;
+      mtDebug('zoom: hit aria-label', label);
+      zoomLastFindRank = 100;
+      return el;
+    }
+  }
+  // Strategy 3: vùng aria-live có nội dung giống phụ đề
   for (const root of roots) {
     let els; try { els = root.querySelectorAll('[aria-live="polite"],[aria-live="assertive"]'); } catch (_) { continue; }
     for (const el of els) {
-      const text = (el.innerText || '').trim();
-      if (text.length < 3 || text.length > 4000) continue;
-      const win  = el.ownerDocument.defaultView || window;
-      const rect = el.getBoundingClientRect();
-      const cs   = win.getComputedStyle(el);
-      if (rect.width < 80 || rect.height < 15) continue;
-      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-      mtDebug('zoom: hit aria-live', text.slice(0, 40)); return el;
+      if (!isPlausibleZoomCaptionBox(el) || skipped(el)) continue;
+      if (!zoomCandidateChanged(el)) continue;
+      mtDebug('zoom: hit aria-live', (el.innerText || '').slice(0, 40));
+      zoomLastFindRank = 200;
+      return el;
     }
   }
-  // Strategy 4: heuristic — div ở nửa dưới màn hình có nội dung
+  // Strategy 4: lưới an toàn khi Zoom đổi class — theo CẤU TRÚC chứ không theo
+  // vị trí: một khối ở nửa dưới màn hình gồm avatar + đoạn chữ dạng câu.
   for (const root of roots) {
     let els; try { els = root.querySelectorAll('div'); } catch (_) { continue; }
     for (const d of els) {
-      if (d.children.length < 1 || d.children.length > 30) continue;
-      const win  = d.ownerDocument.defaultView || window;
-      const rect = d.getBoundingClientRect();
-      const cs   = win.getComputedStyle(d);
-      if (rect.top < win.innerHeight * 0.4) continue;
-      if (rect.height < 20 || rect.width < 80) continue;
-      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-      const text = (d.innerText || '').trim();
-      if (text.length > 3 && text.length < 4000) { mtDebug('zoom: hit heuristic', text.slice(0, 40)); return d; }
+      const kids = d.children ? d.children.length : 0;
+      if (kids < 2 || kids > 6) continue;
+      let rect; try { rect = d.getBoundingClientRect(); } catch (_) { continue; }
+      if (rect.top < zoomWin(d).innerHeight * 0.4) continue;
+      let hasAvatar = false;
+      try { hasAvatar = ZOOM_SELECTORS.avatar.some(s => d.querySelector(s)) ||
+        Array.from(d.children).some(k => { const t = (k.innerText || '').trim(); return t.length >= 1 && t.length <= 2 && !(k.children && k.children.length); }); } catch (_) {}
+      if (!hasAvatar) continue;
+      if (!isPlausibleZoomCaptionBox(d)) continue;
+      const lines = parseZoomCaptionLines(d);
+      if (!lines.some(l => l.text.length >= 4 && !looksLikeSpeakerName(l.text))) continue;
+      const box = d.parentElement && isPlausibleZoomCaptionShape(d.parentElement) &&
+                  d.parentElement.children.length <= 6 ? d.parentElement : d;
+      if (skipped(box) || !zoomCandidateChanged(box)) continue;
+      mtDebug('zoom: hit heuristic', (d.innerText || '').slice(0, 40));
+      zoomLastFindRank = 300;
+      return box;
     }
   }
   mtDebug('zoom: no container found');
@@ -763,6 +1384,7 @@ function findZoomContainer() {
 function startZoomScraper() {
   if (captureActive && captionMode === 'zoom-cc' && captionObserver) return;
   const container = findZoomContainer();
+  mtDebug('zoom: CC', container ? 'BẬT → zoom-cc' : 'chưa thấy phụ đề → zoom-mic');
   if (container) {
     captionMode = 'zoom-cc';
     attachZoomObserver(container);
@@ -772,65 +1394,127 @@ function startZoomScraper() {
   }
   captionMode = 'zoom-mic';
   startWebSpeechSilent();
-  const poll = setInterval(() => {
-    if (!isRecognizing) { clearInterval(poll); return; }
-    const c = findZoomContainer();
-    if (c) { clearInterval(poll); switchToCC('zoom', c); }
-  }, 1500);
+  startCCPoll('zoom', findZoomContainer, 1500);
 }
 
-function attachZoomObserver(container) {
+// Zoom cuộn phụ đề: đoạn đầu của lượt nói dài bị cắt bớt khỏi hộp. Khi đó chữ
+// mới không còn bắt đầu bằng phần đã chốt (base) — tìm đoạn chồng lấn giữa đuôi
+// base và đầu chữ mới, trả về phần đầu chữ mới đã được chốt rồi.
+function zoomAlignBase(base, text) {
+  if (!base) return '';
+  if (text.startsWith(base)) return base;
+  const max = Math.min(base.length, text.length);
+  const minOverlap = Math.min(6, base.length);
+  for (let len = max; len >= minOverlap; len--) {
+    if (base.endsWith(text.slice(0, len))) return text.slice(0, len);
+  }
+  return '';
+}
+
+let zoomCaptionContainer = null;
+let zoomContainerRank    = Infinity;
+
+// Chống ghi lặp khi GẮN LẠI observer. Mỗi lần gắn so các dòng của hộp với ẢNH
+// CHỤP lần xử lý trước theo VỊ TRÍ (alignCaptionSnapshot — dò độ cuộn), nên cùng
+// một câu nói hai lần ở hai vị trí là hai lượt nói. Ảnh chụp + base của lần gắn
+// trước (zoomPrevAttach) chỉ được mang sang khi đó là cảnh Zoom DỰNG LẠI hộp giữa
+// lúc đang nói: còn interim dở, gắn lại đúng hộp cũ (Reload), hoặc hộp cũ vừa có
+// chữ mới trong ZOOM_REMOUNT_WINDOW_MS (interim có thể đã bị chốt vì timer 2.5s /
+// 7s trong khoảng trống trước khi watchdog kịp gắn lại).
+//
+// Không giữ cả phiên: người nói nói lại đúng câu cũ ("はい。") sau một quãng im
+// lặng sẽ bị nuốt, và base của câu trước cắt mất đầu câu mới.
+let zoomPrevAttach = null;   // { container, lastActivityAt, snapshot() }
+// Phần chữ đã chốt của từng node lượt nói: { speaker, text }. Có speaker để Zoom
+// dùng lại node cho người khác thì không lấy chữ người trước làm base.
+const zoomNodeDone = new WeakMap();
+const ZOOM_REMOUNT_WINDOW_MS = 4500;   // ≈ nhịp watchdog 1.5s + chờ chốt 2.5s
+
+function attachZoomObserver(container, rank = zoomLastFindRank) {
+  // Quyết định mang trạng thái cũ sang TRƯỚC khi chốt interim của hộp cũ
+  const prev = zoomPrevAttach;
+  const midSpeech = !!(interimSegment && interimSegment._zoom);
+  const carryOver = !!prev && (midSpeech || prev.container === container ||
+                               Date.now() - prev.lastActivityAt < ZOOM_REMOUNT_WINDOW_MS);
+  if (midSpeech) commitInterimNow();
+  const carryState = carryOver ? prev.snapshot() : null;
+
   if (captionObserver) captionObserver.disconnect();
+  zoomCaptionContainer = container;
+  zoomContainerRank    = rank;
   let lastProcessedText = '';
-  const processedKeys = new Set();
-  let zoomInterimBase    = '';
-  let zoomInterimSpeaker = '';
+  let snapshot       = carryState ? carryState.lines : [];   // [{ speaker, text, done }]
+  let interimBase    = carryState ? carryState.base : '';
+  let interimSpeaker = carryState ? carryState.speaker : '';
+
+  const me = zoomPrevAttach = {
+    container,
+    lastActivityAt: carryState ? prev.lastActivityAt : 0,
+    snapshot: () => ({ lines: snapshot, base: interimBase, speaker: interimSpeaker }),
+  };
 
   function processContainer() {
-    const rawText = container.innerText || '';
-    if (!rawText.trim() || rawText === lastProcessedText) return;
-    lastProcessedText = rawText;
-    const lines = splitBySpeak(rawText);
+    const rawText = zoomVisibleText(container);
+    if (!rawText.trim()) return;
+    const lines = parseZoomCaptionLines(container).filter(l => l.text && l.text.trim().length >= 2);
+    // So theo (người nói + chữ), không chỉ chữ hiển thị: Zoom dùng lại node cho
+    // người khác nói cùng câu thì chỉ avatar (alt) đổi, chữ y nguyên.
+    const sig = lines.map(l => l.speaker + ':::' + l.text).join('\n');
+    if (sig === lastProcessedText) return;
+    lastProcessedText = sig;
+    me.lastActivityAt = Date.now();
     mtDebug('zoom: rawText', rawText.length, 'chars →', lines.length, 'lines');
     if (!lines.length) return;
+    const flags = alignCaptionSnapshot(snapshot, lines);
+    const snap  = lines.map((l, i) => ({ speaker: l.speaker, text: l.text, done: flags[i] }));
+    snapshot = snap;
+
+    const markDone = (idx, line, text) => {
+      if (line.node) zoomNodeDone.set(line.node, { speaker: line.speaker, text });
+      if (snapshot === snap && snap[idx].text === text) snap[idx].done = true;
+    };
+
     lines.forEach((line, idx) => {
-      if (!line.text.trim()) return;
+      if (snap[idx].done) return;
+      const nd   = line.node && zoomNodeDone.get(line.node);
+      const done = nd && nd.speaker === line.speaker ? nd.text : undefined;
+      if (done === line.text) { snap[idx].done = true; return; }
+
       if (idx < lines.length - 1) {
-        const key = line.speaker + ':::' + line.text;
-        if (!processedKeys.has(key)) {
-          processedKeys.add(key);
-          if (processedKeys.size > 5000) {
-            const first = processedKeys.values().next().value;
-            processedKeys.delete(first);
-          }
-          // Commit only the delta if part of this block was already committed
-          let textToCommit = line.text;
-          if (line.speaker === zoomInterimSpeaker && zoomInterimBase && line.text.startsWith(zoomInterimBase)) {
-            textToCommit = line.text.slice(zoomInterimBase.length).trim();
-            zoomInterimBase = '';
-          }
-          if (textToCommit) {
-            addFinalSegment(line.speaker, textToCommit);
-            syncTranscript();
-          }
+        // Lượt nói cũ (đã có lượt mới phía dưới) → chốt ngay phần chưa chốt
+        const base = done || (line.speaker === interimSpeaker ? interimBase : '');
+        let textToCommit = line.text;
+        if (base) {
+          const b = zoomAlignBase(base, line.text);
+          if (b) textToCommit = line.text.slice(b.length).trim();
         }
-      } else {
-        if (line.speaker !== zoomInterimSpeaker) {
-          zoomInterimBase    = '';
-          zoomInterimSpeaker = line.speaker;
+        if (line.speaker === interimSpeaker) interimBase = '';
+        markDone(idx, line, line.text);
+        if (textToCommit) {
+          addFinalSegment(line.speaker, textToCommit);
+          syncTranscript();
         }
-        interimSegment = {
-          speaker: line.speaker,
-          text:    line.text,
-          fallbackBase: zoomInterimBase,
-          _onCommit: (spk, _delta, fullText) => {
-            processedKeys.add(spk + ':::' + fullText);
-            zoomInterimBase    = fullText;
-            zoomInterimSpeaker = spk;
-          }
-        };
-        scheduleCommitInterim();
+        return;
       }
+      // Lượt đang nói
+      if (line.speaker !== interimSpeaker) {
+        interimBase    = '';
+        interimSpeaker = line.speaker;
+      }
+      if (done) interimBase = done;
+      interimBase = zoomAlignBase(interimBase, line.text);
+      interimSegment = {
+        speaker: line.speaker,
+        text:    line.text,
+        fallbackBase: interimBase,
+        _zoom: true,
+        _onCommit: (spk, _delta, fullText) => {
+          markDone(idx, line, fullText);
+          interimBase    = fullText;
+          interimSpeaker = spk;
+        }
+      };
+      scheduleCommitInterim();
     });
     saveToLiveStorage();
   }
@@ -841,6 +1525,70 @@ function attachZoomObserver(container) {
   });
   processContainer();
   captionObserver.observe(container, { childList: true, subtree: true, characterData: true });
+  startZoomCCWatchdog();
+}
+
+// ── Watchdog CC cho Zoom ────────────────────────────────────────
+// Zoom gỡ hộp phụ đề khi không ai nói và dựng hộp mới khi có người nói tiếp.
+// Watchdog bám theo: hộp cũ bị gỡ → tìm hộp mới và gắn lại observer. Im lặng lâu
+// (hoặc user tắt CC) mới quay về Microphone; ở chế độ standby thì không bao giờ
+// bật mic — chỉ quay lại rình phụ đề.
+const ZOOM_WATCHDOG_MS         = 1500;
+let   zoomUpgradeTick          = 0;
+const ZOOM_CC_MISS_TO_FALLBACK = 20;   // 20 × 1.5s ≈ 30s không có hộp phụ đề
+
+function startZoomCCWatchdog() {
+  stopMeetCCWatchdog();
+  // Không chốt interim ở đây: attachZoomObserver cần biết hộp bị dựng lại giữa
+  // lúc đang nói hay không, rồi tự chốt.
+  const reattach = (c, rank) => attachZoomObserver(c, rank);   // tự khởi động lại watchdog
+  ccWatchdog = setInterval(() => {
+    if (!captureActive || captionMode !== 'zoom-cc') { stopMeetCCWatchdog(); return; }
+    const cur = zoomCaptionContainer;
+    if (isAttachedNode(cur) && isPlausibleZoomCaptionShape(cur, zoomContainerRank <= ZOOM_STRONG_RANK)) {
+      ccMissCount = 0;
+      // Đang bám vào một item lẻ trong khi đã có hộp ngoài → trèo lên hộp ngoài
+      const outer = outermostZoomCaptionBox(cur);
+      if (outer !== cur) {
+        mtDebug('zoom: đang bám item lẻ → chuyển lên hộp ngoài');
+        reattach(outer, zoomContainerRank);
+        return;
+      }
+      // Hộp bắt bằng selector chung / suy đoán: nếu xuất hiện ứng viên chắc chắn
+      // hơn (class đặc trưng của Zoom) thì chuyển sang — không bám nhầm suốt buổi.
+      // Quét toàn trang tốn kém → chỉ mỗi 4 nhịp (~6s) một lần.
+      if (zoomContainerRank > ZOOM_STRONG_RANK && ++zoomUpgradeTick % 4 === 0) {
+        const alt = findZoomContainer(cur);
+        if (alt && zoomLastFindRank < zoomContainerRank) {
+          mtDebug('zoom: có hộp phụ đề chắc chắn hơn → chuyển sang');
+          reattach(alt, zoomLastFindRank);
+        }
+      }
+      return;
+    }
+    const c = findZoomContainer();
+    if (c) {
+      mtDebug('zoom: hộp phụ đề được dựng lại → gắn observer vào hộp mới');
+      ccMissCount = 0;
+      reattach(c, zoomLastFindRank);
+      return;
+    }
+    if (!isRecognizing) {
+      // Standby: không có mic dự phòng — tiếp tục chờ hộp phụ đề xuất hiện lại
+      return;
+    }
+    if (++ccMissCount < ZOOM_CC_MISS_TO_FALLBACK) return;
+
+    mtDebug('zoom: không thấy phụ đề quá lâu → quay về zoom-mic');
+    stopMeetCCWatchdog();
+    if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+    zoomCaptionContainer = null;
+    commitInterimNow();
+    captionMode = 'zoom-mic';
+    saveToLiveStorage();
+    startWebSpeechSilent();
+    startCCPoll('zoom', findZoomContainer, 1500);
+  }, ZOOM_WATCHDOG_MS);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -948,6 +1696,9 @@ function switchToCC(platform, container) {
   clearInterval(speechWatchdog); speechWatchdog = null;
   if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
   captionMode = platform + '-cc';
+  // Nhánh mic không bật cờ này; thiếu nó thì sau khi chuyển sang CC popup vẫn
+  // thấy captureActive=false và watchdog CC tự tắt ngay nhịp đầu.
+  captureActive = true;
   if (platform === 'meet') attachMeetObserver(container);
   else if (platform === 'teams') attachTeamsObserver(container);
   else if (platform === 'zoom')  attachZoomObserver(container);
@@ -1018,6 +1769,9 @@ function saveToLiveStorage() {
 function startAll() {
   if (overlayActive) return;
   overlayActive = true;
+  // Từ giờ startXxxScraper lo việc tìm CC; poll standby còn sống sẽ gắn observer
+  // lần hai song song với poll của nhánh mic.
+  clearInterval(standbyPollTimer); standbyPollTimer = null;
   isRecognizing = true;
   setBadge('', '#34a853'); // icon xanh, không hiển thị chấm badge
 
@@ -1045,19 +1799,14 @@ function stopAll() {
   isRecognizing = false;
   clearInterval(speechWatchdog); speechWatchdog = null;
   if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
-  // Commit pending interim before stopping
-  if (interimSegment) {
-    let textToCommit = interimSegment.text;
-    if (interimSegment.fallbackBase && textToCommit.startsWith(interimSegment.fallbackBase)) {
-      textToCommit = textToCommit.slice(interimSegment.fallbackBase.length).trim();
-    }
-    if (textToCommit && textToCommit.trim().length >= 2) {
-      addFinalSegment(interimSegment.speaker, textToCommit);
-      syncTranscript();
-    }
-    interimSegment = null;
-  }
+  // Commit pending interim before stopping. Dùng commitInterimNow() để _onCommit
+  // / meetFallbackBase được cập nhật — nếu không, Start lại khi phụ đề còn trên
+  // màn hình sẽ ghi lặp phần vừa chốt.
   clearTimeout(commitTimer);
+  commitInterimNow();
+  interimStartedAt = 0;
+  stopMeetCCWatchdog();
+  stopCCPoll();
   if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
   captureActive = false;
   isProcessing = false;
@@ -1086,11 +1835,15 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     });
   } else if (req.action === 'clear_transcript') {
     fullSegments = []; interimSegment = null; fullTranscript = '';
+    interimStartedAt = 0;
     lastFinalTime = 0; currentSpeaker = 'Speaker 1'; speakerMap = {};
     saveToLiveStorage();
     sendResponse({ ok: true });
   } else if (req.action === 'reset_saved') {
     // Full session teardown — disconnect observer so it doesn't keep firing
+    stopMeetCCWatchdog();
+    stopCCPoll();
+    resetCaptionDedupState();
     if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
     clearTimeout(commitTimer);
     if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
@@ -1099,6 +1852,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     savedTranscript = '';
     savedSpeakers.clear();
     fullSegments = []; fullTranscript = ''; interimSegment = null;
+    interimStartedAt = 0;
     speakerMap = {}; currentSpeaker = 'Speaker 1'; lastFinalTime = 0;
     const key = STORAGE_PREFIX + meetingKey(location.href);
     try { chrome.storage.local.remove([key]); } catch(_) {}
@@ -1107,40 +1861,59 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     sendResponse({ ok: true });
   } else if (req.action === 'reload_capture') {
     const micModes = ['webspeech','meet-mic','teams-mic','zoom-mic'];
+
+    // Chưa xác định được nguồn caption (content script vừa được nạp lại, hoặc
+    // capture đã chết). Bản cũ không có nhánh nào khớp nên nút Reload chạy
+    // xuống saveToLiveStorage() rồi trả ok — user bấm mà KHÔNG có gì xảy ra.
+    // Ở đây dựng lại phiên từ đầu thay vì im lặng.
+    if (!captionMode || !captureActive) {
+      if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+      clearTimeout(commitTimer);
+      if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
+      clearInterval(speechWatchdog); speechWatchdog = null;
+      isRecognizing = false;
+      overlayActive = false;   // startAll() thoát ngay nếu cờ này còn bật
+      startAll();
+      saveToLiveStorage();
+      sendResponse({ ok: true, restarted: true, captionMode: captionMode || null });
+      return true;
+    }
+
     if (micModes.includes(captionMode)) {
       restartWebSpeech();
-    } else if (captionMode === 'meet-cc') {
-      if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
-      const c = findMeetContainer();
-      if (c) attachMeetObserver(c);
-      else { captionMode = 'meet-mic'; startWebSpeechSilent(); }
-    } else if (captionMode === 'teams-cc') {
-      if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
-      const c = findTeamsContainer();
-      if (c) attachTeamsObserver(c);
-      else {
-        captionMode = 'teams-mic'; startWebSpeechSilent();
-        const poll = setInterval(() => {
-          if (!isRecognizing) { clearInterval(poll); return; }
-          const c2 = findTeamsContainer();
-          if (c2) { clearInterval(poll); switchToCC('teams', c2); }
-        }, 1000);
-      }
-    } else if (captionMode === 'zoom-cc') {
-      if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
-      const c = findZoomContainer();
-      if (c) attachZoomObserver(c);
-      else {
-        captionMode = 'zoom-mic'; startWebSpeechSilent();
-        const poll = setInterval(() => {
-          if (!isRecognizing) { clearInterval(poll); return; }
-          const c2 = findZoomContainer();
-          if (c2) { clearInterval(poll); switchToCC('zoom', c2); }
-        }, 1000);
+    } else if (/-cc$/.test(String(captionMode))) {
+      const platform = captionMode.slice(0, -3);
+      const finder = platform === 'meet' ? findMeetContainer
+                   : platform === 'teams' ? findTeamsContainer : findZoomContainer;
+      const attach = platform === 'meet' ? attachMeetObserver
+                   : platform === 'teams' ? attachTeamsObserver : attachZoomObserver;
+      const c = finder();
+      if (c) {
+        attach(c);
+      } else if (!overlayActive) {
+        // Standby (user chưa bấm Start): KHÔNG bao giờ bật mic. Bản cũ rơi xuống
+        // mic ở đây — Zoom gỡ hộp phụ đề mỗi lần im lặng, nên bấm Reload lúc đó là
+        // micro bật ngầm còn poll quay lại CC thoát ngay (isRecognizing = false).
+        stopMeetCCWatchdog();
+        if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+        commitInterimNow();
+        captureActive = false;
+        captionMode = null;
+        startStandbyCapture();
+      } else if (platform === 'zoom' && captionObserver) {
+        // Zoom gỡ hộp phụ đề mỗi lần im lặng: giữ zoom-cc, watchdog gắn vào hộp mới
+        // (im lặng quá lâu watchdog mới tự quay về mic)
+        startZoomCCWatchdog();
+      } else {
+        if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+        stopMeetCCWatchdog();
+        captionMode = platform + '-mic';
+        startWebSpeechSilent();
+        startCCPoll(platform, finder, 1000);
       }
     }
     saveToLiveStorage();
-    sendResponse({ ok: true });
+    sendResponse({ ok: true, restarted: false, captionMode });
   }
   return true; // keep message port open for reliable response delivery (MV3)
 });
@@ -1179,14 +1952,16 @@ function meetingKey(url) {
 }
 
 function startStandbyCapture() {
-  if (captureActive || !isMeetingUrl(location.href)) return;
+  // Phiên đang chạy (user đã bấm Start) thì startXxxScraper lo tìm CC — standby
+  // chạy song song sẽ gắn observer lần hai (bootstrap resolve muộn hơn Start).
+  if (captureActive || overlayActive || !isMeetingUrl(location.href)) return;
   const platform = detectPlatform();
   if (platform !== 'meet' && platform !== 'teams' && platform !== 'zoom') return;
 
   clearInterval(standbyPollTimer);
   const startedAt = Date.now();
   standbyPollTimer = setInterval(() => {
-    if (captureActive || Date.now() - startedAt > STANDBY_MAX_WAIT_MS || !isMeetingUrl(location.href)) {
+    if (captureActive || overlayActive || Date.now() - startedAt > STANDBY_MAX_WAIT_MS || !isMeetingUrl(location.href)) {
       clearInterval(standbyPollTimer); standbyPollTimer = null;
       return;
     }
@@ -1214,6 +1989,7 @@ function startStandbyCapture() {
 function stopStandbyCapture() {
   clearInterval(standbyPollTimer); standbyPollTimer = null;
   if (!overlayActive && captureActive) {
+    stopMeetCCWatchdog();
     if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
     clearTimeout(commitTimer);
     captureActive = false;
@@ -1256,6 +2032,7 @@ function resetBuffersInMemory() {
   speakerMap      = {};
   currentSpeaker  = 'Speaker 1';
   lastFinalTime   = 0;
+  resetCaptionDedupState();
 }
 
 // ── Autosave ──────────────────────────────────────────────────────

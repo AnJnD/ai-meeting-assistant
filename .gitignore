@@ -9,3 +9,6 @@ desktop.ini
 *.swo
 CLAUDE.md
 .claude/
+
+# Ảnh / tư liệu báo lỗi — không commit
+Bug/

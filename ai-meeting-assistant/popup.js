@@ -402,6 +402,8 @@ function showInactiveView() {
   // Always clear error messages when returning to home screen
   const errEl = document.getElementById('errorMsg');
   if (errEl) errEl.textContent = '';
+  const actErrEl = document.getElementById('activeErrorMsg');
+  if (actErrEl) { actErrEl.textContent = ''; actErrEl.style.display = 'none'; }
 
   isSessionActive  = false;
   isSessionStopped = false;
@@ -528,7 +530,7 @@ function applyLiveData(data) {
   reconcileTrans();
   if (activeSubTab === 'translate') renderTranslate();
   else                              renderTransStatus();
-  if (transEnabled) schedulePump();
+  if (transEnabled) { startTransHeartbeat(); schedulePump(); }
 }
 
 // ── Restore minutes from storage ──────────────────────────────────
@@ -627,27 +629,45 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (isSessionActive) applyLiveData(data);
 });
 
+// ── Báo lỗi ra chỗ user ĐANG NHÌN THẤY ───────────────────────────
+// #errorMsg nằm trong view-inactive; showActiveView() ẩn cả view đó đi. Nên
+// trong lúc họp, mọi lỗi của sendToTab() ghi vào một thẻ vô hình — nút Reload
+// bấm hỏng mà popup vẫn im như không có chuyện gì. Hàm này chọn thẻ của view
+// đang mở.
+function showTabError(msg) {
+  const active   = document.getElementById('view-active');
+  const isActive = active && active.style.display !== 'none';
+  const el = document.getElementById(isActive ? 'activeErrorMsg' : 'errorMsg');
+  if (!el) return;
+  el.textContent   = msg || '';
+  el.style.display = msg ? '' : 'none';
+  if (msg) clearTimeout(showTabError._t);
+  if (msg) showTabError._t = setTimeout(() => {
+    el.textContent = '';
+    if (el.id === 'activeErrorMsg') el.style.display = 'none';
+  }, 6000);
+}
+
 // ── sendToTab helper ──────────────────────────────────────────────
 // silent:true suppresses error display — use for cleanup/best-effort actions
 function sendToTab(message, onSuccess, onError, opts = {}) {
-  const errEl = document.getElementById('errorMsg');
-  if (errEl) errEl.textContent = '';
+  showTabError('');
+  const fail = (msg) => {
+    if (!opts.silent) showTabError(msg);
+    if (onError) onError(msg);
+  };
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-    if (!tabs?.length) {
-      if (!opts.silent && errEl) errEl.textContent = 'Không tìm thấy tab.';
-      if (onError) onError();
-      return;
-    }
+    if (!tabs?.length) { fail('Không tìm thấy tab.'); return; }
     const tab = tabs[0];
     if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
-      if (!opts.silent && errEl) errEl.textContent = 'Không thể chạy trên trang này.';
-      if (onError) onError();
+      fail('Không thể chạy trên trang này.');
       return;
     }
     chrome.tabs.sendMessage(tab.id, message, res => {
       if (chrome.runtime.lastError) {
-        if (!opts.silent && errEl) errEl.textContent = 'Không thể kết nối. Thử reload trang.';
-        if (onError) onError();
+        // Hay gặp nhất: vừa cập nhật/reload extension nên content script cũ
+        // trong tab họp đã chết, tab chưa được tải lại nên chưa có script mới.
+        fail('Mất kết nối với trang họp — nhấn F5 tải lại trang họp rồi thử lại.');
         return;
       }
       if (onSuccess) onSuccess(res);
@@ -693,7 +713,9 @@ document.getElementById('stopBtn').addEventListener('click', () => {
 document.getElementById('resumeBtn').addEventListener('click', () => {
   chrome.storage.sync.get(['aiProvider', 'aiFailover', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], r => {
     if (!hasUsableKey(r)) {
-      document.getElementById('errorMsg').textContent = 'Vào Settings và lưu AI API Key trước!';
+      // resumeBtn nằm TRONG view-active → phải báo qua showTabError(), ghi
+      // thẳng vào #errorMsg thì user không thấy gì.
+      showTabError('Vào Settings và lưu AI API Key trước!');
       return;
     }
     sendToTab({ action: 'start' }, () => {
@@ -750,10 +772,13 @@ document.getElementById('newSessionBtn').addEventListener('click', () => {
 });
 
 // ── Reload capture ────────────────────────────────────────────────
+// Trước đây nút này không có phản hồi gì: chạy được thì im lặng, chạy hỏng thì
+// lỗi ghi vào #errorMsg (đang bị ẩn). Bấm xong user không biết có gì xảy ra không.
 document.getElementById('reloadBtn').addEventListener('click', () => {
   const btn = document.getElementById('reloadBtn');
   btn.disabled = true;
-  sendToTab({ action: 'reload_capture' }, () => {
+  sendToTab({ action: 'reload_capture' }, res => {
+    flashBtn('reloadBtn', res?.restarted ? 'Đã khởi động lại' : 'Đã tải lại');
     setTimeout(() => { btn.disabled = false; }, 1500);
   }, () => { btn.disabled = false; });
 });
@@ -820,6 +845,31 @@ document.getElementById('dlScriptBtn').addEventListener('click', () => {
 //      nên một dòng hỏng không chặn cả trăm dòng phía sau.
 //   3. Cache src→dst dùng chung mọi cuộc họp: cụm lặp ("はい", "そうですね")
 //      không tốn token, và khi phải dựng lại segment cũng không trả tiền lần hai.
+//
+// ── v4.8 ─────────────────────────────────────────────────────────
+// a) CÔNG TẮC transOn. Tắt = không có một call API nào, kể cả khi tab Translate
+//    đang mở. Câu ghi trong lúc tắt vào trạng thái 'skipped' — miễn phí, nhưng
+//    vẫn dịch bù được sau bằng nút "Dịch phần cũ".
+//
+//    MẶC ĐỊNH LUÔN LÀ TẮT, PHẠM VI TỪNG CUỘC HỌP. Công tắc nằm trong bản ghi
+//    của cuộc họp (mt_trans:<meeting>) chứ không phải pref toàn cục: đóng/mở
+//    popup giữa cuộc họp thì giữ nguyên lựa chọn, nhưng sang cuộc họp khác —
+//    hoặc sau khi bấm "Xóa transcript" — là về TẮT, phải tự bật lại mới dịch.
+//    Bản trước lưu ở khoá toàn cục nên bật một lần là bật mãi cho mọi cuộc họp
+//    sau đó, dịch âm thầm và đốt token ngoài ý muốn.
+//
+// b) SỬA LỖI "lúc nào cũng pending 76-100 câu". Bản 4.7 lưu chunk xuống storage
+//    chỉ với { src, dst }, mất trạng thái. Mở lại popup thì mọi chunk 'deferred'
+//    sống dậy thành 'queued', và transBacklogChecked (biến RAM) lại về false nên
+//    deferBacklog() chạy tiếp một lượt nữa, hoãn (tổng - 40) dòng. Mỗi lần
+//    đóng/mở popup giữa cuộc họp là đống tồn phình thêm: 40 → 76 → 100…
+//    Nay trạng thái 'deferred'/'skipped' VÀ cờ đã-xét-tồn-đọng đều được lưu,
+//    nên deferBacklog() chỉ chạy đúng một lần cho mỗi cuộc họp.
+//
+// c) TỰ RÚT BACKLOG. Kể cả khi không phình, 76 dòng "(chưa dịch)" nằm đó vĩnh
+//    viễn tới khi user tự bấm nút. Giờ khi công tắc bật và hàng đợi live đã
+//    rảnh, mỗi TRANS_DRAIN_MS lại kéo TRANS_DRAIN_BATCH dòng cũ vào dịch, nên
+//    số pending giảm dần về 0. Dòng live luôn được ưu tiên trước.
 // ═════════════════════════════════════════════════════════════════
 
 const TRANS_MAX_CHARS    = 1200;   // ký tự nguồn tối đa mỗi lần gọi API
@@ -828,19 +878,29 @@ const TRANS_MAX_INFLIGHT = 3;      // số request chạy song song
 const TRANS_FLUSH_MS     = 400;    // gom thêm bấy nhiêu ms rồi mới bắn lô
 const TRANS_TIMEOUT_MS   = 25000;  // watchdog cho 1 request
 const TRANS_RETRY_MS     = 4000;
-const TRANS_MAX_FAIL     = 3;      // lỗi liên tiếp → dừng, chờ user bấm "Dịch lại"
+const TRANS_MAX_FAIL     = 3;      // lỗi liên tiếp → dừng, chờ nhịp tim thử lại
+const TRANS_HEARTBEAT_MS = 1500;   // nhịp quét hàng đợi khi chuỗi pump bị đứt
+const TRANS_COOLDOWN_MS  = 60000;  // bó tay xong, bao lâu thì tự thử lại
 const TRANS_MAX_TRY      = 2;      // 1 chunk thử tối đa 2 lần rồi giữ nguyên bản gốc
 const TRANS_CHUNK_CHARS  = 220;    // chunk dài hơn thì cắt nhỏ
 const TRANS_BACKLOG      = 40;     // mở tab giữa chừng mà tồn hơn ngần này → hỏi user
 const TRANS_CACHE_MAX    = 500;
 const TRANS_CACHE_CHARS  = 120;    // câu dài hơn gần như không lặp → không cache
 const TRANS_CACHE_KEY    = 'mt_trans_cache';
+const TRANS_ON_LEGACY_KEY = 'mt_translate_on';  // pref toàn cục của bản cũ — chỉ để dọn
+const TRANS_DRAIN_MS     = 5000;   // nhịp rút backlog khi hàng đợi live đã rảnh
+const TRANS_DRAIN_BATCH  = 12;     // mỗi nhịp kéo bấy nhiêu dòng cũ vào dịch
 
 let activeSubTab    = 'transcript';   // 'transcript' | 'translate'
+// CÔNG TẮC CHÍNH — tắt thì không gọi API lần nào. Mặc định TẮT; chỉ bật lại nếu
+// chính user đã bật trong cuộc họp ĐANG diễn ra (đọc từ bản ghi của cuộc họp).
+let transOn         = false;
 let transEnabled    = false;          // bật sau lần đầu user mở tab Translate
 // transSegs[i] song song lastSegments[i]
 //   { speaker, base, chunks: [{ src, dst, state, tries }] }
-//   state: 'queued' | 'sending' | 'done' | 'deferred'
+//   state: 'queued' | 'sending' | 'done'
+//        | 'deferred' — hoãn vì tồn đọng; công tắc bật thì tự rút dần
+//        | 'skipped'  — ghi lúc công tắc TẮT; chỉ dịch khi user bấm "Dịch phần cũ"
 let transSegs       = [];
 let lastSegments    = [];
 let lastInterim     = null;
@@ -850,13 +910,16 @@ let transInflight   = new Map();      // reqId -> chunk[] đang chờ API
 let transReqSeq     = 0;
 let transFailCount  = 0;
 let transError      = '';
+let transLastFailAt = 0;
 let transRetryTimer = null;
 let transSaveTimer  = null;
 let transPumpTimer  = null;
+let transHeartbeat  = null;
 let transCache      = new Map();      // src đã chuẩn hoá -> dst (Map giữ thứ tự chèn = LRU)
 let transCacheDirty = false;
 let transRows       = [];             // [{ sig, el }] — cache DOM để render tăng dần
-let transBacklogChecked = false;      // đã xét tồn đọng cho phiên popup này chưa
+let transBacklogChecked = false;      // đã xét tồn đọng cho CUỘC HỌP này chưa (được lưu xuống storage)
+let transLastDrainAt = 0;             // lần gần nhất kéo backlog vào hàng đợi
 
 // ── Cache bản dịch, dùng chung mọi cuộc họp ──────────────────────
 function cacheKeyOf(src) {
@@ -884,8 +947,13 @@ function cachePut(src, dst) {
 
 function loadTransCache() {
   try {
+    // Dọn pref toàn cục của bản cũ: nếu để lại, nâng cấp xong người dùng vẫn
+    // thấy khoá "đang bật" nằm trong storage dù không còn ai đọc nó.
+    chrome.storage.local.remove([TRANS_ON_LEGACY_KEY], () => { void chrome.runtime.lastError; });
+
     chrome.storage.local.get([TRANS_CACHE_KEY], r => {
       void chrome.runtime.lastError;
+
       const arr = r?.[TRANS_CACHE_KEY];
       if (!Array.isArray(arr)) return;
       arr.forEach(p => { if (p?.length === 2) transCache.set(p[0], p[1]); });
@@ -951,21 +1019,35 @@ function splitChunks(text) {
 // ── Nạp cache từ storage ─────────────────────────────────────────
 function hydrateTrans(stored) {
   loadTransCache();
-  if (!stored) return;
+  // Không có bản ghi (cuộc họp mới) hoặc bản ghi đã quá hạn → công tắc TẮT.
+  // Gán lại tường minh: hydrateTrans() có thể chạy khi popup đã mở sẵn.
+  transOn = false;
+  if (!stored) { renderTransToggle(); return; }
   if (Date.now() - (stored.savedAt || 0) > GIJIROKU_TTL_MS) {
     if (currentTransKey) chrome.storage.local.remove([currentTransKey]);
+    renderTransToggle();
     return;
   }
+  // Chỉ cuộc họp NÀY, và chỉ khi chính user đã bật trong cuộc họp này.
+  transOn      = !!stored.on;
   transEnabled = !!stored.enabled;
+  renderTransToggle();
+  if (transOn && transEnabled) { startTransHeartbeat(); schedulePump(); }
+  // Cờ đã-xét-tồn-đọng thuộc về CUỘC HỌP, không phải phiên popup. Bản 4.7 để nó
+  // ở RAM nên mỗi lần mở lại popup là deferBacklog() hoãn thêm một lượt nữa →
+  // đống "Dịch phần cũ" phình dần 40 → 76 → 100.
+  transBacklogChecked = !!stored.blc;
   transSegs = (stored.segs || []).map(s => ({
     speaker: s.speaker || 'Speaker',
     base:    s.base || '',
     // Không chunk nào được nạp lại ở trạng thái 'sending': popup đóng là
     // request cũ mất, để nguyên sẽ thành dòng treo "đang dịch..." vĩnh viễn.
+    // Nhưng 'deferred'/'skipped' PHẢI giữ nguyên — cho chúng về 'queued' rồi
+    // hoãn lại chính là cơ chế làm đống tồn nhân lên sau mỗi lần mở popup.
     chunks: (s.chunks || []).map(c => ({
       src:   c.src || '',
       dst:   c.dst || '',
-      state: c.dst ? 'done' : 'queued',
+      state: c.dst ? 'done' : (c.st === 'd' ? 'deferred' : c.st === 's' ? 'skipped' : 'queued'),
       tries: 0
     }))
   }));
@@ -974,25 +1056,45 @@ function hydrateTrans(stored) {
 function saveTransSoon() {
   if (!currentTransKey) return;
   clearTimeout(transSaveTimer);
-  transSaveTimer = setTimeout(() => {
-    const segs = transSegs.map(s => ({
-      speaker: s.speaker,
-      base:    s.base,
-      chunks:  s.chunks.map(c => ({ src: c.src, dst: c.dst }))
-    }));
-    try {
-      chrome.storage.local.set({
-        [currentTransKey]: { enabled: transEnabled, segs, savedAt: Date.now() }
-      }, () => { void chrome.runtime.lastError; });
-    } catch (_) {}
-    saveTransCache();
-  }, 800);
+  transSaveTimer = setTimeout(writeTransNow, 800);
+}
+
+// Ghi ngay, không chờ debounce. Dùng khi user bấm công tắc: popup có thể đóng
+// ngay sau cú bấm (click ra ngoài là Chrome đóng popup), mà 800ms debounce thì
+// lựa chọn chưa kịp xuống storage.
+function writeTransNow() {
+  if (!currentTransKey) return;
+  clearTimeout(transSaveTimer);
+  transSaveTimer = null;
+  const segs = transSegs.map(s => ({
+    speaker: s.speaker,
+    base:    s.base,
+    // st chỉ ghi cho chunk CHƯA dịch: 'd' = hoãn vì tồn đọng, 's' = ghi lúc
+    // công tắc tắt. Thiếu nó thì lần mở popup sau chúng thành 'queued'.
+    chunks:  s.chunks.map(c => {
+      const o = { src: c.src, dst: c.dst };
+      if (!c.dst && c.state === 'deferred') o.st = 'd';
+      if (!c.dst && c.state === 'skipped')  o.st = 's';
+      return o;
+    })
+  }));
+  try {
+    chrome.storage.local.set({
+      // on: công tắc của CUỘC HỌP này. Cuộc họp khác không có khoá này nên mặc
+      // định là tắt.
+      [currentTransKey]: { on: transOn, enabled: transEnabled, blc: transBacklogChecked, segs, savedAt: Date.now() }
+    }, () => { void chrome.runtime.lastError; });
+  } catch (_) {}
+  saveTransCache();
 }
 
 function resetTransState() {
   clearTimeout(transSaveTimer);
   clearTimeout(transRetryTimer);
   clearTimeout(transPumpTimer);
+  clearInterval(transHeartbeat);
+  transPumpTimer = null;
+  transHeartbeat = null;
   transSegs      = [];
   transRows      = [];
   // Request đang bay vẫn sẽ trả về, nhưng chunk của nó không còn nằm trong
@@ -1002,9 +1104,20 @@ function resetTransState() {
   transError     = '';
   transEnabled   = false;
   transBacklogChecked = false;
+  transLastDrainAt    = 0;
+  // Công tắc là state của CUỘC HỌP: dọn phiên dịch là về mặc định TẮT. Muốn dịch
+  // tiếp thì user bật lại — không bao giờ tự chạy khi chưa được bật.
+  transOn        = false;
   const box = document.getElementById('translateBox');
-  if (box) box.innerHTML = '<span class="placeholder">Chưa có nội dung để dịch...</span>';
+  if (box) box.innerHTML = `<span class="placeholder">${transPlaceholder()}</span>`;
+  renderTransToggle();
   renderTransStatus();
+}
+
+function transPlaceholder() {
+  return transOn
+    ? 'Chưa có nội dung để dịch...'
+    : 'Dịch tự động đang TẮT — bật công tắc bên dưới để bắt đầu.';
 }
 
 function allChunks() {
@@ -1041,9 +1154,11 @@ function reconcileTrans() {
 
     splitChunks(delta).forEach(src => {
       const free = freeTranslate(src);
-      s.chunks.push(free === null
-        ? { src, dst: '',   state: 'queued', tries: 0 }
-        : { src, dst: free, state: 'done',   tries: 0 });
+      // Cache/heuristic vẫn chạy khi công tắc tắt — nó miễn phí. Chỉ chunk thật
+      // sự cần API mới bị chặn lại ở 'skipped'.
+      s.chunks.push(free !== null
+        ? { src, dst: free, state: 'done', tries: 0 }
+        : { src, dst: '', state: transOn ? 'queued' : 'skipped', tries: 0 });
     });
   }
 }
@@ -1058,17 +1173,71 @@ function deferBacklog() {
 }
 
 function undeferAll() {
-  allChunks().forEach(c => { if (c.state === 'deferred') c.state = 'queued'; });
+  allChunks().forEach(c => {
+    if (c.state === 'deferred' || c.state === 'skipped') c.state = 'queued';
+  });
+}
+
+// Rút backlog nhỏ giọt. Chỉ chạy khi công tắc bật, hàng đợi live đã rảnh và
+// không có lỗi — nhờ vậy dòng đang nói luôn được dịch trước, còn số "(chưa
+// dịch)" thì giảm dần về 0 thay vì đứng yên ở 76 tới hết cuộc họp.
+// Chunk 'skipped' (ghi lúc công tắc tắt) KHÔNG được rút tự động: user đã chủ
+// động tắt để tiết kiệm, bật lại không được lặng lẽ dịch bù cả quá khứ.
+function drainBacklog() {
+  if (transError) return;
+  if (Date.now() - transLastDrainAt < TRANS_DRAIN_MS) return;
+
+  let n = 0;
+  const all = allChunks();
+  for (let i = 0; i < all.length && n < TRANS_DRAIN_BATCH; i++) {
+    if (all[i].state !== 'deferred') continue;
+    all[i].state = 'queued';
+    n++;
+  }
+  if (!n) return;
+  transLastDrainAt = Date.now();
+  pumpTranslate();
 }
 
 // ── Gọi AI dịch theo lô ──────────────────────────────────────────
+// LƯU Ý QUAN TRỌNG: đây là THROTTLE, không phải debounce.
+//
+// Bản trước dùng clearTimeout + setTimeout mỗi lần applyLiveData() chạy. Nhưng
+// content.js ghi storage mỗi lần caption nhích (nhiều lần/giây khi có người
+// nói), nên hạn 400ms bị dời liên tục và pumpTranslate() KHÔNG BAO GIỜ chạy:
+// chunk cứ dồn vào hàng đợi, mọi dòng treo "đang dịch..." và status leo lên
+// "Đang dịch (37)..." mà không hề có request nào được gửi đi.
 function schedulePump() {
-  clearTimeout(transPumpTimer);
-  transPumpTimer = setTimeout(pumpTranslate, TRANS_FLUSH_MS);
+  if (transPumpTimer) return;   // đã có hẹn → để nó chạy đúng hạn, không dời
+  transPumpTimer = setTimeout(() => {
+    transPumpTimer = null;
+    pumpTranslate();
+  }, TRANS_FLUSH_MS);
+}
+
+// Nhịp tim: lưới an toàn cho mọi trường hợp chuỗi settle() → pumpTranslate()
+// bị đứt (popup vừa mở lại, request cuối cùng bị huỷ, hàng đợi rỗng rồi mới có
+// chunk mới…). Rẻ: chỉ gọi pump khi thật sự có việc và không có lô nào đang bay.
+function startTransHeartbeat() {
+  if (transHeartbeat) return;
+  transHeartbeat = setInterval(() => {
+    if (!transOn || !transEnabled) return;
+    if (transInflight.size) return;
+    // Đã bó tay trước đó → sau TRANS_COOLDOWN_MS thử lại, đừng im lặng vĩnh viễn
+    if (transFailCount >= TRANS_MAX_FAIL) {
+      if (Date.now() - transLastFailAt < TRANS_COOLDOWN_MS) return;
+      transFailCount = 0;
+      transError     = '';
+    }
+    if (countChunks(['queued'])) { pumpTranslate(); return; }
+    drainBacklog();   // hàng đợi live rảnh → gặm dần phần tồn đọng
+  }, TRANS_HEARTBEAT_MS);
 }
 
 function pumpTranslate() {
   clearTimeout(transPumpTimer);
+  transPumpTimer = null;
+  if (!transOn) { renderTransStatus(); return; }   // công tắc tắt → 0 call API
   if (!transEnabled) return;
   if (transFailCount >= TRANS_MAX_FAIL) { renderTransStatus(); return; }
 
@@ -1078,6 +1247,7 @@ function pumpTranslate() {
   if (!transBacklogChecked) {
     transBacklogChecked = true;
     deferBacklog();
+    saveTransSoon();   // chốt cờ xuống storage: mỗi cuộc họp chỉ hoãn MỘT lần
   }
 
   while (transInflight.size < TRANS_MAX_INFLIGHT) {
@@ -1176,6 +1346,7 @@ function applyBatch(jobs, text) {
 
 function failBatch(jobs, msg) {
   transFailCount++;
+  transLastFailAt = Date.now();
   transError = msg;   // chỉ được xoá khi có lô thành công, để status không im lặng
   jobs.forEach(c => {
     c.tries++;
@@ -1232,12 +1403,18 @@ function parseNumbered(text, n) {
 // rồi dựng lại toàn bộ N dòng mỗi lần caption nhích (~5 lần/giây) nên popup
 // giật rõ khi transcript dài.
 function transRowModels() {
+  // Công tắc TẮT = tab này im lặng tuyệt đối. Cache/heuristic vẫn âm thầm điền
+  // (miễn phí — xem freeTranslate) nhưng KHÔNG được hiện ra: user tắt là để
+  // khỏi tốn tiền, mà vẫn thấy chữ tiếng Việt chảy ra thì tưởng công tắc hỏng
+  // và extension vẫn đang gọi API. Bật lại là hiện đủ ngay, không mất gì.
+  if (!transOn) return [];
+
   const rows = [];
   transSegs.forEach(s => {
     if (!s || !s.chunks.length) return;
     const dst     = s.chunks.filter(c => c.dst).map(c => c.dst).join(' ');
     const waiting = s.chunks.some(c => c.state === 'queued' || c.state === 'sending');
-    const defer   = s.chunks.some(c => c.state === 'deferred');
+    const defer   = s.chunks.some(c => c.state === 'deferred' || c.state === 'skipped');
     if (!dst && !waiting && !defer) return;
     rows.push({ speaker: s.speaker, text: dst, waiting, defer, interim: false });
   });
@@ -1284,8 +1461,10 @@ function renderTranslate() {
 
   const rows = transRowModels();
   if (!rows.length) {
-    if (transRows.length) {
-      box.innerHTML = '<span class="placeholder">Chưa có nội dung để dịch...</span>';
+    // Placeholder đổi theo công tắc, nên so nội dung chứ không chỉ so transRows
+    const ph = `<span class="placeholder">${transPlaceholder()}</span>`;
+    if (transRows.length || box.innerHTML !== ph) {
+      box.innerHTML = ph;
       transRows = [];
     }
     renderTransStatus();
@@ -1313,26 +1492,77 @@ function renderTranslate() {
   renderTransStatus();
 }
 
+function renderTransToggle() {
+  const cb = document.getElementById('transToggle');
+  if (cb) cb.checked = transOn;
+  const wrap = document.getElementById('transToggleWrap');
+  if (wrap) {
+    wrap.classList.toggle('on', transOn);
+    if (wrap.setAttribute) wrap.setAttribute('aria-checked', transOn ? 'true' : 'false');
+    wrap.title = transOn
+      ? 'Đang dịch tự động — bấm để tắt (không tốn token nữa)'
+      : 'Dịch tự động đang tắt — bấm để bật';
+  }
+  const lbl = document.getElementById('transToggleLabel');
+  if (lbl) lbl.textContent = transOn ? 'Đang bật' : 'Đã tắt';
+}
+
 function renderTransStatus() {
-  const deferred = countChunks(['deferred']);
+  const pending  = countChunks(['deferred', 'skipped']);
   const backfill = document.getElementById('backfillTransBtn');
   if (backfill) {
-    backfill.style.display = deferred ? '' : 'none';
-    backfill.title = `Dịch nốt ${deferred} dòng cũ chưa dịch`;
+    backfill.style.display = pending ? '' : 'none';
+    backfill.title = `Dịch nốt ${pending} dòng cũ chưa dịch`;
     const label = document.getElementById('backfillTransLabel');
-    if (label) label.textContent = `Dịch phần cũ (${deferred})`;
+    if (label) label.textContent = `Dịch phần cũ (${pending})`;
   }
 
   const el = document.getElementById('translateStatus');
   if (!el) return;
   const waiting = countChunks(['queued', 'sending']);
-  el.className = 'tr-status' + (transError ? ' err' : '');
+  el.className = 'tr-status' + (transError ? ' err' : (transOn ? '' : ' off'));
   el.title     = transError || '';
-  if (transError && transFailCount >= TRANS_MAX_FAIL) el.textContent = '⚠ ' + transError;
+  if (!transOn)                                       el.textContent = 'Đã tắt — không gọi API';
+  else if (transError && transFailCount >= TRANS_MAX_FAIL) el.textContent = '⚠ ' + transError;
   else if (transError)                                el.textContent = '⚠ Lỗi, đang thử lại...';
   else if (waiting)                                   el.textContent = `Đang dịch (${waiting})...`;
   else                                                el.textContent = '';
 }
+
+// ── Bật / tắt dịch tự động ───────────────────────────────────────
+function setTransOn(on) {
+  transOn = !!on;
+  renderTransToggle();
+
+  if (transOn) {
+    transFailCount = 0;
+    transError     = '';
+    startTransHeartbeat();
+    pumpTranslate();
+  } else {
+    // Tắt: chặn mọi thứ chuẩn bị gửi. Lô ĐANG bay thì để nó về — tiền đã trả
+    // rồi, vứt đi chỉ phí. Chunk chờ chuyển sang 'skipped' nên vẫn dịch bù được.
+    clearTimeout(transRetryTimer);
+    clearTimeout(transPumpTimer);
+    transPumpTimer = null;
+    transError     = '';
+    transFailCount = 0;
+    allChunks().forEach(c => {
+      if (c.state === 'queued' || c.state === 'deferred') c.state = 'skipped';
+    });
+  }
+
+  writeTransNow();   // lựa chọn công tắc phải xuống storage ngay, không debounce
+  if (activeSubTab === 'translate') renderTranslate();
+  else                              renderTransStatus();
+}
+
+document.getElementById('transToggleWrap')?.addEventListener('click', () => setTransOn(!transOn));
+document.getElementById('transToggleWrap')?.addEventListener('keydown', e => {
+  if (e?.key !== ' ' && e?.key !== 'Enter') return;
+  if (e.preventDefault) e.preventDefault();
+  setTransOn(!transOn);
+});
 
 // ── Chuyển sub-tab Transcript / Translate ─────────────────────────
 function setSubTab(name) {
@@ -1350,8 +1580,10 @@ function setSubTab(name) {
     transEnabled   = true;
     transFailCount = 0;
     transError     = '';
+    startTransHeartbeat();
     reconcileTrans();
     saveTransSoon();
+    renderTransToggle();
     renderTranslate();
     pumpTranslate();   // mở tab là dịch ngay, không chờ hết debounce
   }
@@ -1363,9 +1595,15 @@ document.querySelectorAll('.sub-tab').forEach(btn => {
 
 // ── Dịch nốt phần cũ đã bị hoãn ──────────────────────────────────
 document.getElementById('backfillTransBtn')?.addEventListener('click', () => {
+  // Bấm nút này là user chủ động muốn dịch → tự bật công tắc nếu đang tắt,
+  // nếu không thì bấm xong chẳng có gì xảy ra.
+  if (!transOn) { setTransOn(true); }
   undeferAll();
   transFailCount = 0;
   transError     = '';
+  // User chủ động đòi dịch bù → pumpTranslate() không được hoãn lại ngay
+  transBacklogChecked = true;
+  saveTransSoon();
   renderTranslate();
   pumpTranslate();
 });
@@ -1373,6 +1611,7 @@ document.getElementById('backfillTransBtn')?.addEventListener('click', () => {
 // ── Dịch lại toàn bộ ─────────────────────────────────────────────
 document.getElementById('retranslateBtn').addEventListener('click', () => {
   showConfirm('Dịch lại toàn bộ nội dung?', () => {
+    if (!transOn) setTransOn(true);
     clearTimeout(transRetryTimer);
     transInflight  = new Map();
     transFailCount = 0;

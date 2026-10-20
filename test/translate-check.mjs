@@ -110,6 +110,25 @@ function flushTimeouts(rounds = 4, maxMs = 10000) {
 // Nổ mọi timer, kể cả watchdog — dùng để mô phỏng service worker chết.
 function flushAll(rounds = 4) { flushTimeouts(rounds, Infinity); }
 
+// ── Đồng hồ ảo ──────────────────────────────────────────────────────
+// flushTimeouts() ở trên nổ timer theo NGƯỠNG delay, không quan tâm thời gian
+// đã trôi. Nó không mô phỏng được lỗi "debounce bị dời hạn vô tận": muốn thấy
+// lỗi đó phải có đồng hồ thật sự chạy, để một hạn 400ms bị dời mỗi 200ms thì
+// vĩnh viễn không tới. advance() dưới đây làm đúng việc ấy.
+let vnow = Date.now();
+const intervals = new Map(); let intervalSeq = 1;
+function advance(ms, step = 50) {
+  const target = vnow + ms;
+  while (vnow < target) {
+    vnow = Math.min(target, vnow + step);
+    const dueT = [...timeouts.entries()].filter(([, t]) => t.at <= vnow);
+    dueT.forEach(([id]) => timeouts.delete(id));
+    dueT.forEach(([, t]) => t.fn());
+    const dueI = [...intervals.entries()].filter(([, t]) => t.at <= vnow);
+    dueI.forEach(([, t]) => { t.at = vnow + t.ms; t.fn(); });
+  }
+}
+
 // ───────────────────────── minimal DOM stub ─────────────────────────
 function makeEl(id) {
   const el = {
@@ -160,12 +179,18 @@ group('G0 module extraction');
 check('translate module found in popup.js', start > 0 && end > start);
 const moduleSrc = popupSrc.slice(start, end);
 
+// Date.now() chạy theo đồng hồ ảo; `new Date()` giữ nguyên hành vi thật
+// (chỉ dùng để đặt tên file tải về).
+class FakeDate extends Date { static now() { return vnow; } }
+
 const sandbox = {
-  chrome: chromeStub, console, JSON, Date, Math, Array, Set, Map, String, Number, parseInt, RegExp, Object,
+  chrome: chromeStub, console, JSON, Date: FakeDate, Math, Array, Set, Map, String, Number, parseInt, RegExp, Object,
   document: documentStub,
   navigator: { clipboard: { writeText: (t) => { sandbox._lastCopy = t; return { then: (f) => f() }; } } },
-  setTimeout: (fn, ms) => { const id = timerSeq++; timeouts.set(id, { fn, ms: ms || 0 }); return id; },
+  setTimeout: (fn, ms) => { const id = timerSeq++; timeouts.set(id, { fn, ms: ms || 0, at: vnow + (ms || 0) }); return id; },
   clearTimeout: (id) => timeouts.delete(id),
+  setInterval: (fn, ms) => { const id = intervalSeq++; intervals.set(id, { fn, ms: ms || 0, at: vnow + (ms || 0) }); return id; },
+  clearInterval: (id) => intervals.delete(id),
   // deps provided by the rest of popup.js
   GIJIROKU_TTL_MS: 2 * 60 * 60 * 1000,
   currentTransKey: 'mt_trans:teams:m1',
@@ -190,11 +215,15 @@ function feed(segments, interim = null) {
   flushTimeouts();
 }
 function openTranslateTab() { S('setSubTab("translate")'); flushTimeouts(); }
-function resetAll() {
-  S('resetTransState(); activeSubTab = "transcript"; lastSegments = []; lastInterim = null; transEnabled = false; transCache.clear(); transCacheDirty = false; transReqSeq = 0;');
-  timeouts.clear(); aiCalls.length = 0; pendingCalls.length = 0; aiMode = 'ok';
+// Mặc định của tính năng là TẮT (v4.8). Phần lớn test kiểm tra động cơ dịch
+// nên resetAll() bật sẵn công tắc; riêng G18 kiểm tra chính cái công tắc đó.
+function resetAll(on = true) {
+  S('resetTransState(); activeSubTab = "transcript"; lastSegments = []; lastInterim = null; transEnabled = false; transCache.clear(); transCacheDirty = false; transReqSeq = 0; transFailCount = 0; transError = ""; transLastFailAt = 0; transLastDrainAt = 0;');
+  S(`transOn = ${on ? 'true' : 'false'}; renderTransToggle();`);
+  timeouts.clear(); intervals.clear(); aiCalls.length = 0; pendingCalls.length = 0; aiMode = 'ok';
   delete storageData['mt_trans:teams:m1'];
   delete storageData['mt_trans_cache'];
+  delete storageData['mt_translate_on'];   // pref toàn cục của bản cũ, không còn dùng
   Object.values(elements).forEach(el => { el._kids = []; el._html = ''; });
 }
 const seg = (speaker, text) => ({ speaker, text });
@@ -585,6 +614,296 @@ eq('loại model ảnh của Gemini',
    ['gemini-3.5-flash-lite']);
 eq('danh sách rỗng → mảng rỗng (gọi hàm rơi về MODEL_FALLBACK)',
    B('rankModels([], "lite")'), []);
+
+// ═════════════════════ G17: bỏ đói hàng đợi ═════════════════════
+// Lỗi user báo: mọi dòng treo "đang dịch...", status leo lên "Đang dịch (37)..."
+// mà KHÔNG có lỗi nào hiện ra. Nguyên nhân: content.js ghi storage mỗi lần
+// caption nhích (vài lần/giây), applyLiveData() gọi schedulePump(), bản cũ
+// clearTimeout rồi hẹn lại 400ms → hạn không bao giờ tới, không request nào
+// được gửi. Test này chạy trên ĐỒNG HỒ ẢO nên tái hiện đúng hiện tượng đó.
+group('G17 caption chạy liên tục — hàng đợi không bị bỏ đói');
+
+// Đúng những gì applyLiveData() làm, KHÔNG tự nổ timer
+function feedLive(segments, interim = null) {
+  S(`lastSegments = ${JSON.stringify(segments)}; lastInterim = ${JSON.stringify(interim)};`);
+  S('reconcileTrans();'
+    + ' if (activeSubTab === "translate") renderTranslate(); else renderTransStatus();'
+    + ' if (transEnabled) { if (typeof startTransHeartbeat === "function") startTransHeartbeat(); schedulePump(); }');
+}
+
+resetAll();
+openTranslateTab();          // user mở tab Translate lúc chưa có nội dung
+S('transBacklogChecked = true;');   // bỏ qua nhánh hoãn tồn đọng cho gọn
+let live = '';
+for (let i = 1; i <= 20; i++) {
+  live += `文${i}。`;
+  feedLive([seg('田中', live)]);
+  advance(200);              // caption nhích mỗi 200ms — nhanh hơn TRANS_FLUSH_MS
+}
+check('có request được gửi trong lúc caption đang chạy', aiCalls.length > 0,
+      'aiCalls=' + aiCalls.length);
+advance(3000);
+eq('không còn chunk nào kẹt hàng đợi', stateCount('queued'), 0);
+eq('không còn chunk nào kẹt "đang gửi"', stateCount('sending'), 0);
+check('mọi câu đều có bản dịch', chunks().every(c => c.dst), JSON.stringify(chunks().filter(c => !c.dst)));
+eq('status không còn "Đang dịch"', elements['translateStatus'].textContent, '');
+
+// Nhịp tim: kể cả khi chuỗi settle→pump bị đứt hoàn toàn, hàng đợi vẫn được quét
+resetAll();
+openTranslateTab();
+S('transBacklogChecked = true;');
+S('lastSegments = [{speaker:"田中", text:"こんにちは。"}]; reconcileTrans();');   // nạp chunk mà KHÔNG hẹn pump
+eq('chunk đang nằm chờ, chưa ai gửi', stateCount('queued'), 1);
+eq('chưa có request nào', aiCalls.length, 0);
+advance(3000);
+eq('nhịp tim đã gửi giúp', aiCalls.length, 1);
+eq('dịch xong', dstOf(0), 'VI[こんにちは。]');
+
+// Bó tay vì lỗi API → sau TRANS_COOLDOWN_MS tự thử lại, không im lặng vĩnh viễn
+resetAll();
+aiMode = 'error';
+openTranslateTab();
+S('transBacklogChecked = true;');
+feedLive([seg('田中', 'エラーテスト。')]);
+advance(30000);              // đủ để 3 lần thử liên tiếp cùng thất bại
+check('đã dừng sau khi lỗi liên tiếp', S('transFailCount') >= 3, 'transFailCount=' + S('transFailCount'));
+check('status báo lỗi rõ ràng', /⚠/.test(elements['translateStatus'].textContent),
+      elements['translateStatus'].textContent);
+const callsAtStop = aiCalls.length;
+aiMode = 'ok';
+feedLive([seg('田中', 'エラーテスト。 新しい文。')]);
+advance(10000);
+eq('trong thời gian nghỉ thì không gọi API nữa', aiCalls.length, callsAtStop);
+advance(60000);              // qua TRANS_COOLDOWN_MS
+check('hết thời gian nghỉ thì tự thử lại', aiCalls.length > callsAtStop,
+      'aiCalls=' + aiCalls.length + ' callsAtStop=' + callsAtStop);
+eq('không còn chunk kẹt sau khi hồi phục', stateCount('queued'), 0);
+
+// ═════════════════════ G18: công tắc bật/tắt ═════════════════════
+group('G18 công tắc — tắt là KHÔNG tốn token');
+
+// Tắt: mở tab Translate cũng không có call nào
+resetAll(false);
+openTranslateTab();
+feed([seg('A', 'これは翻訳されません。'), seg('B', 'これも。')]);
+advance(8000);
+eq('công tắc tắt → 0 call API', aiCalls.length, 0);
+eq('câu mới vào trạng thái skipped', stateCount('skipped'), 2);
+eq('không có chunk nào chờ dịch', stateCount('queued') + stateCount('sending'), 0);
+eq('status nói rõ đang tắt', elements['translateStatus'].textContent, 'Đã tắt — không gọi API');
+eq('nhãn công tắc đúng', elements['transToggleLabel'].textContent, 'Đã tắt');
+check('nút "Dịch phần cũ" hiện ra để dịch bù', elements['backfillTransBtn'].style.display === '');
+check('nút đếm đúng số dòng', elements['backfillTransLabel'].textContent.includes('(2)'),
+      elements['backfillTransLabel'].textContent);
+
+// Bấm công tắc → bật
+clickEl('transToggleWrap');
+flushTimeouts(4);
+eq('bật rồi → lưu ngay vào bản ghi cuộc họp', storageData['mt_trans:teams:m1']?.on, true);
+eq('nhãn đổi sang Đang bật', elements['transToggleLabel'].textContent, 'Đang bật');
+eq('bật KHÔNG tự dịch bù phần ghi lúc tắt', aiCalls.length, 0);
+eq('phần cũ vẫn ở skipped', stateCount('skipped'), 2);
+
+// Chỉ câu MỚI mới được dịch
+feed([seg('A', 'これは翻訳されません。'), seg('B', 'これも。'), seg('C', 'これは翻訳されます。')]);
+advance(3000);
+eq('câu mới được dịch', dstOf(2), 'VI[これは翻訳されます。]');
+eq('câu cũ vẫn chưa dịch', stateCount('skipped'), 2);
+
+// Bấm "Dịch phần cũ" mới dịch bù
+aiCalls.length = 0;
+clickEl('backfillTransBtn');
+advance(5000);
+eq('bấm nút → dịch nốt phần cũ', stateCount('skipped'), 0);
+eq('phần cũ đã có bản dịch', dstOf(0), 'VI[これは翻訳されません。]');
+
+// Tắt lại giữa chừng: chunk đang xếp hàng phải dừng, không gọi thêm API
+resetAll(true);
+openTranslateTab();
+aiMode = 'manual';
+const pile = [];
+for (let i = 0; i < 30; i++) pile.push(seg('S' + i, `停止${i}です。`));
+feed(pile);
+check('đang có request bay', pendingCalls.length > 0);
+const callsBeforeOff = aiCalls.length;
+clickEl('transToggleWrap');            // TẮT
+aiMode = 'ok';
+advance(20000);
+eq('tắt rồi thì không gửi thêm lô nào', aiCalls.length, callsBeforeOff);
+eq('công tắc tắt được lưu', storageData['mt_trans:teams:m1']?.on, false);
+eq('chunk chờ chuyển sang skipped', stateCount('queued'), 0);
+eq('nhịp tim cũng không rút backlog khi tắt', stateCount('deferred'), 0);
+
+// ═════════════════════ G19: đống tồn không phình + tự rút ═════════════════════
+// Lỗi user báo (v4.7): "lúc nào cũng pending 76-100 câu". Bản 4.7 lưu chunk chỉ
+// với {src,dst} nên mở lại popup là mọi chunk 'deferred' sống dậy thành
+// 'queued', đồng thời transBacklogChecked (biến RAM) về false → deferBacklog()
+// hoãn thêm một lượt nữa. Mỗi vòng đóng/mở popup đống tồn lại to hơn.
+group('G19 backlog — không phình sau mỗi lần mở lại popup');
+
+// Mô phỏng đóng popup: giữ lại đúng thứ đã ghi xuống storage rồi dựng lại từ đó.
+function reopenPopup() {
+  flushTimeouts(4);                                  // để saveTransSoon() kịp ghi
+  const saved = clone(storageData['mt_trans:teams:m1']);
+  S('resetTransState(); lastSegments = []; lastInterim = null; transRows = [];');
+  S(`hydrateTrans(${JSON.stringify(saved)})`);
+  flushTimeouts(2);                                  // loadTransCache() trả về
+  S('activeSubTab = "translate";');
+  return saved;
+}
+
+resetAll(true);
+aiMode = 'dead';                 // API không phản hồi → hàng đợi không tự cạn
+const long = [];
+for (let i = 0; i < 100; i++) long.push(seg('S' + i, `長${i}です。`));
+feed(long);
+S('setSubTab("translate")');
+flushTimeouts(2);
+eq('lần đầu: hoãn (100 - 40) dòng', stateCount('deferred'), 60);
+
+const growth = [stateCount('deferred')];
+for (let round = 0; round < 3; round++) {
+  reopenPopup();
+  // họp tiếp, thêm 30 câu nữa
+  const more = long.slice();
+  for (let i = 0; i < 30 * (round + 1); i++) more.push(seg('N' + round + '_' + i, `新${round}_${i}です。`));
+  S(`lastSegments = ${JSON.stringify(more)}; reconcileTrans();`);
+  S('transEnabled = true; pumpTranslate();');
+  flushTimeouts(2);
+  growth.push(stateCount('deferred'));
+}
+check('trạng thái deferred sống sót qua lần mở lại popup',
+      growth.every(n => n === 60), 'các vòng: ' + growth.join(' → '));
+check('deferBacklog() chỉ chạy MỘT lần cho cả cuộc họp',
+      storageData['mt_trans:teams:m1']?.blc === true,
+      'blc=' + storageData['mt_trans:teams:m1']?.blc);
+
+// Với bản 4.7 thì con số trên leo thang; đây là kiểm chứng trực tiếp:
+const savedNow = storageData['mt_trans:teams:m1'];
+check('trạng thái chưa-dịch được ghi xuống storage',
+      savedNow.segs.some(s => s.chunks.some(c => c.st === 'd')),
+      JSON.stringify(savedNow.segs[0]).slice(0, 120));
+
+// Tự rút backlog: pending phải giảm dần về 0 chứ không nằm đó vĩnh viễn
+resetAll(true);
+const backlog2 = [];
+for (let i = 0; i < 80; i++) backlog2.push(seg('T' + i, `残${i}です。`));
+feed(backlog2);
+openTranslateTab();
+flushTimeouts(3);
+const deferredAtStart = stateCount('deferred');
+check('có phần tồn đọng bị hoãn', deferredAtStart > 0, 'deferred=' + deferredAtStart);
+advance(60000);                  // nhịp tim chạy, hàng đợi live rảnh
+eq('tự rút hết backlog, không còn "pending" treo', stateCount('deferred'), 0);
+check('mọi dòng đều có bản dịch', chunks().every(c => c.dst),
+      JSON.stringify(chunks().filter(c => !c.dst)).slice(0, 120));
+eq('nút "Dịch phần cũ" tự ẩn', elements['backfillTransBtn'].style.display, 'none');
+
+// Dòng LIVE luôn được ưu tiên trước backlog
+resetAll(true);
+const backlog3 = [];
+for (let i = 0; i < 80; i++) backlog3.push(seg('U' + i, `古${i}です。`));
+feed(backlog3);
+openTranslateTab();
+flushTimeouts(3);
+aiCalls.length = 0;
+const withLive = backlog3.concat([seg('LIVE', 'いま話している文です。')]);
+S(`lastSegments = ${JSON.stringify(withLive)}; reconcileTrans();`);
+S('pumpTranslate();');
+flushTimeouts(3);
+check('câu live được gửi ngay ở lô đầu',
+      aiCalls.length > 0 && aiCalls[0].text.includes('いま話している文です。'),
+      JSON.stringify(aiCalls[0]?.text)?.slice(0, 120));
+
+// ═════════════════════ G20: mặc định TẮT theo từng cuộc họp ═════════════════════
+// Bản trước lưu công tắc ở khoá toàn cục 'mt_translate_on': bật một lần là bật
+// mãi cho MỌI cuộc họp sau đó → dịch âm thầm, đốt token ngoài ý muốn. Nay công
+// tắc thuộc bản ghi của cuộc họp, cuộc họp mới luôn bắt đầu ở trạng thái tắt.
+group('G20 mặc định TẮT — công tắc thuộc từng cuộc họp');
+
+// Cuộc họp mới: chưa có bản ghi → tắt, dù pref toàn cục của bản cũ đang là true
+resetAll(true);
+storageData['mt_translate_on'] = true;         // di sản bản cũ
+S('hydrateTrans(undefined)');
+flushTimeouts(2);
+eq('cuộc họp mới → công tắc tắt', S('transOn'), false);
+check('pref toàn cục của bản cũ bị dọn khỏi storage',
+      !('mt_translate_on' in storageData), JSON.stringify(storageData['mt_translate_on']));
+eq('nhãn công tắc hiện Đã tắt', elements['transToggleLabel'].textContent, 'Đã tắt');
+
+// Và mở tab Translate ở cuộc họp mới thì cũng không có call nào
+aiCalls.length = 0;
+openTranslateTab();
+feed([seg('新', 'これは勝手に翻訳されません。')]);
+advance(8000);
+eq('cuộc họp mới → 0 call API khi chưa bật', aiCalls.length, 0);
+
+// Giữa CÙNG một cuộc họp: đã bật thì đóng/mở popup vẫn bật
+resetAll(false);
+openTranslateTab();
+feed([seg('田中', 'よろしくお願いします。')]);
+clickEl('transToggleWrap');                    // user tự bật
+advance(5000);
+eq('user bật → có dịch', S('transOn'), true);
+const sameMeeting = reopenPopup();
+eq('bản ghi cuộc họp mang theo công tắc', sameMeeting.on, true);
+eq('mở lại popup giữa cuộc họp → vẫn bật', S('transOn'), true);
+
+// Bản ghi quá hạn (cuộc họp cũ để lâu) → tắt
+S('resetTransState()');
+S(`hydrateTrans({ on: true, enabled: true, blc: true, segs: [], savedAt: 0 })`);
+flushTimeouts(2);
+eq('bản ghi quá TTL → công tắc tắt', S('transOn'), false);
+
+// "Xóa transcript" (resetTransState) cũng đưa công tắc về tắt
+resetAll(true);
+openTranslateTab();
+feed([seg('田中', 'はい。')]);
+advance(3000);
+S('resetTransState()');
+eq('dọn phiên dịch → công tắc về tắt', S('transOn'), false);
+aiCalls.length = 0;
+feed([seg('田中', 'もう一度お願いします。')]);
+advance(8000);
+eq('sau khi dọn thì không tự dịch nữa', aiCalls.length, 0);
+
+// ═════════════════════ G21: tắt = tab Translate im lặng ═════════════════════
+// Lỗi user báo (ảnh v4.8): công tắc "Đã tắt — không gọi API" mà tab Translate
+// vẫn đẻ ra tiếng Việt. Không phải API — là freeTranslate() ăn cache/heuristic
+// (miễn phí). Nhưng user nhìn chữ chảy ra thì tưởng công tắc hỏng, vẫn đang đốt
+// tiền. Tắt là tab phải TRỐNG, dù trong bộ nhớ vẫn có bản dịch free.
+group('G21 tắt là tab Translate không hiện gì');
+
+resetAll(true);
+openTranslateTab();
+feed([seg('田中', 'はい。はい。')]);
+advance(3000);
+check('bật: có dòng hiện ra', renderedLines().length === 1, JSON.stringify(renderedLines()));
+
+// Tắt công tắc, rồi cho đúng câu ĐÃ nằm trong cache nói lại + 1 câu tiếng Việt
+clickEl('transToggleWrap');
+flushTimeouts(4);
+eq('tắt: tab Translate trống trơn', renderedLines(), []);
+check('tắt: hiện placeholder báo đang tắt',
+      elements['translateBox']._html.includes('TẮT'), elements['translateBox']._html);
+
+aiCalls.length = 0;
+feed([seg('田中', 'はい。はい。'), seg('鈴木', 'はい。はい。'), seg('Thanh', 'Vâng vâng.')],
+     { speaker: '田中', text: 'はい。' });
+advance(8000);
+eq('tắt: vẫn 0 call API', aiCalls.length, 0);
+check('tắt: cache/heuristic vẫn điền ngầm trong bộ nhớ',
+      chunks().some(c => c.dst), JSON.stringify(chunks()));
+eq('tắt: dòng trúng cache KHÔNG hiện ra', renderedLines(), []);
+eq('tắt: câu đang nói (interim) cũng không hiện', renderedLines(), []);
+eq('tắt: status vẫn nói rõ', elements['translateStatus'].textContent, 'Đã tắt — không gọi API');
+
+// Bật lại: hiện đủ ngay, không mất gì và không tốn thêm call nào
+clickEl('transToggleWrap');
+flushTimeouts(4);
+S('renderTranslate()');
+eq('bật lại: không phải gọi API để hiện lại', aiCalls.length, 0);
+check('bật lại: các dòng hiện đủ trở lại', renderedLines().length >= 3, JSON.stringify(renderedLines()));
 
 // ═════════════════════ tổng kết ═════════════════════
 console.log('\n' + '='.repeat(60));

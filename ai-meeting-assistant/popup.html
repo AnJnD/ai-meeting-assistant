@@ -296,6 +296,8 @@
     .tr-text   { font-size: 13px; color: #202124; line-height: 1.5; }
     .tr-wait   { font-size: 11px; color: #9aa0a6; font-style: italic; }
     .tr-src    { font-size: 13px; color: #5f8fd4; font-style: italic; line-height: 1.5; }
+    /* Trước đây max-width:150px + nowrap làm "Đang dịch (76)..." bị cắt cụt
+       thành "Đang dịch (4" khi footer chật. Giờ status co giãn theo chỗ trống. */
     .tr-status {
       font-size: 10px;
       color: #80868b;
@@ -305,9 +307,50 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 150px;
+      min-width: 0;
+      flex: 1 1 auto;
     }
     .tr-status.err { color: #c5221f; }
+    .tr-status.off { color: #9aa0a6; font-style: italic; }
+
+    /* ── Công tắc bật/tắt Live Translate ── */
+    .tr-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+      padding: 2px 4px;
+      border-radius: 6px;
+    }
+    .tr-switch:hover { background: #f1f3f4; }
+    .tr-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .tr-slider {
+      position: relative;
+      width: 28px;
+      height: 16px;
+      border-radius: 999px;
+      background: #dadce0;
+      transition: background .15s;
+      flex-shrink: 0;
+    }
+    .tr-slider::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(0,0,0,.3);
+      transition: transform .15s;
+    }
+    .tr-switch input:checked + .tr-slider { background: #1a73e8; }
+    .tr-switch input:checked + .tr-slider::after { transform: translateX(12px); }
+    .tr-switch-label { font-size: 10px; font-weight: 700; color: #80868b; white-space: nowrap; }
+    .tr-switch.on .tr-switch-label { color: #1a73e8; }
 
     .ai-speaker-a { background:#e8f0fe; color:#1a73e8; }
     .ai-speaker-b { background:#fce8e6; color:#c5221f; }
@@ -792,6 +835,11 @@
     <div id="view-active" style="display:none">
       <div class="p-body" style="padding-bottom:0">
 
+        <!-- Báo lỗi/kết quả cho các thao tác trong lúc đang họp.
+             #errorMsg nằm trong view-inactive nên bị ẩn khi đang ghi — mọi lỗi
+             của nút Reload / Xóa trước đây ghi vào đó và user không thấy gì. -->
+        <div class="err-msg" id="activeErrorMsg" style="display:none"></div>
+
         <!-- Transcript / Translate -->
         <div class="p-section">
           <div class="section-header">
@@ -854,37 +902,55 @@
             </button>
           </div>
 
-          <!-- Translate footer — Copy / Tải giống transcript -->
-          <div class="footer-row" id="translateFooter" style="display:none">
-            <button class="icon-btn blue" id="copyTranslateBtn" title="Copy bản dịch">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/>
-              </svg>
-              Copy
-            </button>
-            <button class="icon-btn blue" id="dlTranslateBtn" title="Tải bản dịch">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
-              </svg>
-              Tải
-            </button>
-            <!-- Chỉ hiện khi mở tab giữa cuộc họp dài: phần cũ được hoãn lại
-                 để không âm thầm đốt quota, user tự quyết có dịch bù hay không -->
-            <button class="icon-btn" id="backfillTransBtn" style="display:none" title="Dịch nốt phần cũ">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M8 4v4l2.5 1.5"/><circle cx="8" cy="8" r="6"/>
-              </svg>
-              <span id="backfillTransLabel">Dịch phần cũ</span>
-            </button>
-            <span class="tr-status" id="translateStatus"></span>
-            <span class="spacer"></span>
-            <button class="icon-btn" id="retranslateBtn" title="Dịch lại toàn bộ">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 8a5 5 0 0 1 8.5-3.5L13 6"/><path d="M13 2.5V6H9.5"/>
-                <path d="M13 8a5 5 0 0 1-8.5 3.5L3 10"/><path d="M3 13.5V10h3.5"/>
-              </svg>
-              Dịch lại
-            </button>
+          <!-- Translate footer — 2 hàng.
+               Hàng 1: công tắc bật/tắt + trạng thái + nút dịch bù phần cũ.
+               Hàng 2: Copy / Tải / Dịch lại.
+               Tách hàng vì nhồi 5 phần tử vào 1 hàng làm status bị cắt cụt. -->
+          <div id="translateFooter" style="display:none">
+            <div class="footer-row">
+              <!-- Công tắc chính: tắt là KHÔNG gọi API lần nào, không tốn token -->
+              <!-- <span> chứ không phải <label>: label bọc input sẽ tự toggle
+                   checkbox rồi handler click lại toggle lần nữa → bấm 1 lần đổi 2 lần.
+                   Ở đây input chỉ để CSS `input:checked + .tr-slider` bắt được. -->
+              <span class="tr-switch" id="transToggleWrap" role="switch" aria-checked="false"
+                    tabindex="0" title="Bật/tắt dịch tự động">
+                <input type="checkbox" id="transToggle" tabindex="-1" aria-hidden="true">
+                <span class="tr-slider"></span>
+                <span class="tr-switch-label" id="transToggleLabel">Đã tắt</span>
+              </span>
+              <span class="tr-status" id="translateStatus"></span>
+              <span class="spacer"></span>
+              <!-- Hiện khi có phần cũ chưa dịch (bật tab giữa cuộc họp dài,
+                   hoặc đoạn ghi trong lúc công tắc đang tắt) -->
+              <button class="icon-btn" id="backfillTransBtn" style="display:none" title="Dịch nốt phần cũ">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 4v4l2.5 1.5"/><circle cx="8" cy="8" r="6"/>
+                </svg>
+                <span id="backfillTransLabel">Dịch phần cũ</span>
+              </button>
+            </div>
+            <div class="footer-row">
+              <button class="icon-btn blue" id="copyTranslateBtn" title="Copy bản dịch">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/>
+                </svg>
+                Copy
+              </button>
+              <button class="icon-btn blue" id="dlTranslateBtn" title="Tải bản dịch">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
+                </svg>
+                Tải
+              </button>
+              <span class="spacer"></span>
+              <button class="icon-btn" id="retranslateBtn" title="Dịch lại toàn bộ">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 8a5 5 0 0 1 8.5-3.5L13 6"/><path d="M13 2.5V6H9.5"/>
+                  <path d="M13 8a5 5 0 0 1-8.5 3.5L3 10"/><path d="M3 13.5V10h3.5"/>
+                </svg>
+                Dịch lại
+              </button>
+            </div>
           </div>
         </div>
 

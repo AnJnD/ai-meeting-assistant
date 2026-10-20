@@ -36,6 +36,7 @@ function eq(name, actual, expected) {
 }
 
 // ───────────────────────── chrome.storage stub ─────────────────────────
+const msgListeners = [];
 const storageData = {};
 const clone = o => o === undefined ? undefined : JSON.parse(JSON.stringify(o));
 const storageLocal = {
@@ -50,7 +51,12 @@ const storageLocal = {
 };
 const chromeStub = {
   storage: { local: storageLocal, sync: { get(_k, cb) { cb({}); } } },
-  runtime: { sendMessage() {}, onMessage: { addListener() {} }, lastError: undefined },
+  // Giữ lại listener để test gọi thẳng được các action ('reload_capture'…)
+  runtime: {
+    sendMessage() {},
+    onMessage: { addListener(fn) { msgListeners.push(fn); } },
+    lastError: undefined,
+  },
 };
 
 // ───────────────────────── controllable timers ─────────────────────────
@@ -58,8 +64,23 @@ const timeouts = new Map(); const intervals = new Map(); let timerSeq = 1;
 function flushTimeouts() {
   const entries = [...timeouts.entries()];
   timeouts.clear();
-  entries.forEach(([, fn]) => fn());
+  entries.forEach(([, t]) => t.fn());
   return entries.length;
+}
+
+// ── Đồng hồ ảo ──────────────────────────────────────────────────────
+// Cần cho các test về hạn chốt interim: lỗi "clearTimeout dời hạn vô tận" chỉ
+// lộ ra khi thời gian THẬT SỰ trôi giữa các lần caption nhích.
+let vnow = Date.now();
+class FakeDate extends Date { static now() { return vnow; } }
+function advance(ms, step = 100) {
+  const target = vnow + ms;
+  while (vnow < target) {
+    vnow = Math.min(target, vnow + step);
+    const due = [...timeouts.entries()].filter(([, t]) => t.at <= vnow);
+    due.forEach(([id]) => timeouts.delete(id));
+    due.forEach(([, t]) => t.fn());
+  }
 }
 
 // ───────────────────────── minimal DOM stub ─────────────────────────
@@ -146,8 +167,9 @@ const sandbox = {
   navigator: { language: 'en-US' },
   URL,
   console,
+  Date: FakeDate,
   MutationObserver: MutationObserverStub,
-  setTimeout: (fn) => { const id = timerSeq++; timeouts.set(id, fn); return id; },
+  setTimeout: (fn, ms) => { const id = timerSeq++; timeouts.set(id, { fn, ms: ms || 0, at: vnow + (ms || 0) }); return id; },
   clearTimeout: (id) => timeouts.delete(id),
   setInterval: () => timerSeq++,   // intervals never auto-fire; tests drive everything
   clearInterval: () => {},
@@ -181,7 +203,7 @@ const shouldBeNames = [
   '(Ominext) Đỗ Việt Anh', 'Nguyễn Văn A (Guest)', 'Dang Viet Anh',
   '田中 太郎', '山田 花子 (ゲスト)', 'タナカ ハルキ', 'タナカハルキ',
   '김민준',
-  '김 민준', // KNOWN-FAIL (MINOR-4): họ Hàn 1 âm tiết + dấu cách chưa được nhận — deferred
+  '김 민준',
   'John Smith',
 ];
 for (const n of shouldBeNames) check(`name: "${n}"`, looksLikeSpeakerName(n) === true);
@@ -661,6 +683,142 @@ group('G9d History with Japanese content');
   documentStub.title = oldTitle;
   delete storageData['mt_giji:teams:jp1'];
 }
+
+// ═════════════════════ G10: Google Meet fallback (innerText) ═════════════════════
+// Ảnh user gửi: cả cuộc họp Meet dồn vào MỘT khối mang tên người nói đầu tiên,
+// tên những người khác nằm lẫn trong nội dung, và không dòng nào được chốt nên
+// tab Translate chẳng có gì để dịch. Hai nguyên nhân:
+//   1. nhánh fallback chỉ gọi extractMeetFallbackSpeaker() → 1 người nói duy nhất
+//   2. scheduleCommitInterim() dời hạn 2.5s mỗi lần caption nhích → không bao giờ chốt
+group('G10 Google Meet fallback — tách người nói + chốt đúng hạn');
+
+const attachMeetObserver = Cfn('attachMeetObserver');
+function newMeetSession(text = '') {
+  resetSession();
+  C('meetFallbackBase = ""; interimStartedAt = 0;');
+  C('for (const k of Object.keys(meetSeenHistory)) delete meetSeenHistory[k];');
+  const container = makeEl({ text });
+  attachMeetObserver(container);
+  const obs = lastObserver;
+  return { container, mutate: () => obs.cb() };
+}
+const getInterim = () => JSON.parse(C('JSON.stringify(interimSegment)') || 'null');
+
+{
+  // Khối innerText nhiều người nói — đúng dạng khung CC của Meet
+  const s = newMeetSession();
+  s.container.innerText = [
+    'Nguyen Thi Thanh (OMI.BU6)', 'はい、それだけです。',
+    'Shoichiro Gonda (OMI.BU1)',  'そのチャットこれは？'
+  ].join('\n');
+  s.mutate();
+  const segs = getSegments();
+  eq('lượt nói cũ được chốt ngay với đúng tên', segs.map(x => x.speaker), ['Nguyen Thi Thanh']);
+  eq('nội dung không dính tên người sau', segs[0]?.text, 'はい、それだけです。');
+  eq('lượt đang nói thuộc về người thứ hai', getInterim()?.speaker, 'Shoichiro Gonda');
+  eq('nội dung lượt đang nói', getInterim()?.text, 'そのチャットこれは？');
+}
+{
+  // Caption chạy liên tục 12 giây: interim phải được chốt, không phình vô hạn
+  const s = newMeetSession();
+  let tail = '';
+  for (let i = 1; i <= 60; i++) {
+    tail += `文${i}。`;
+    s.container.innerText = '田中 太郎\n' + tail;
+    s.mutate();
+    advance(200);           // caption nhích mỗi 200ms — nhanh hơn hạn 2.5s
+  }
+  const segsDuring = getSegments();
+  check('đang nói liên tục vẫn có segment được chốt', segsDuring.length > 0,
+        'fullSegments=' + JSON.stringify(segsDuring));
+  advance(5000);            // im lặng → chốt nốt phần cuối
+  const segs = getSegments();
+  eq('gộp về đúng một người nói', segs.map(x => x.speaker), ['田中 太郎']);
+  eq('không mất chữ, không nhân đôi', segs[0]?.text.replace(/\s+/g, ''), tail);
+  eq('interim đã được dọn', getInterim(), null);
+}
+{
+  // Đổi người nói giữa chừng: base delta phải reset, không cắt nhầm câu
+  const s = newMeetSession();
+  s.container.innerText = '田中 太郎\nおはようございます。';
+  s.mutate();
+  advance(8000);
+  s.container.innerText = '田中 太郎\nおはようございます。\n鈴木 一郎\nよろしくお願いします。';
+  s.mutate();
+  advance(8000);
+  const segs = getSegments();
+  eq('hai người nói tách riêng', segs.map(x => x.speaker), ['田中 太郎', '鈴木 一郎']);
+  eq('câu của người 1 nguyên vẹn', segs[0]?.text.replace(/\s+/g, ''), 'おはようございます。');
+  eq('câu của người 2 nguyên vẹn', segs[1]?.text.replace(/\s+/g, ''), 'よろしくお願いします。');
+}
+
+// ═══════════ G11: nút Reload không được im lặng không làm gì ═══════════
+// User báo: "bản 4.8 nhấn nút reload không có tác dụng gì". Handler cũ chỉ có
+// nhánh cho meet-cc/teams-cc/zoom-cc và các mic mode; khi captionMode chưa xác
+// định (content script vừa được nạp lại sau khi cập nhật extension, hoặc
+// capture đã chết) thì KHÔNG nhánh nào khớp — nó chạy thẳng xuống
+// sendResponse({ok:true}) và popup coi như thành công.
+group('G11 reload_capture — luôn làm một việc gì đó');
+
+const onMsg = msgListeners[0];
+check('content.js đã đăng ký message handler', typeof onMsg === 'function');
+
+function callReload() {
+  let resp = null;
+  onMsg({ action: 'reload_capture' }, {}, r => { resp = r; });
+  return resp;
+}
+
+// Thay startAll() bằng bản đếm để không phải dựng cả pipeline nhận dạng
+C('var __startAllCalls = 0; var __realStartAll = startAll; startAll = function () { __startAllCalls++; };');
+
+// (a) Trường hợp user gặp — chưa có nguồn caption nào
+C('captionMode = null; captureActive = false; overlayActive = true; __startAllCalls = 0;');
+const r1 = callReload();
+eq('chưa có captionMode → dựng lại phiên bằng startAll()', C('__startAllCalls'), 1);
+eq('gỡ overlayActive để startAll() không thoát sớm', C('overlayActive'), false);
+eq('báo về popup là đã khởi động lại', r1?.restarted, true);
+check('vẫn trả ok', r1?.ok === true, JSON.stringify(r1));
+
+// (b) captionMode có nhưng capture đã chết
+C('captionMode = "teams-cc"; captureActive = false; overlayActive = true; __startAllCalls = 0;');
+const r2 = callReload();
+eq('capture đã chết → cũng dựng lại', C('__startAllCalls'), 1);
+eq('báo restarted', r2?.restarted, true);
+
+// (c) Đang chạy bình thường → giữ nguyên hành vi cũ (chỉ gắn lại observer)
+C('captionMode = "teams-cc"; captureActive = true; overlayActive = true; __startAllCalls = 0;');
+const r3 = callReload();
+eq('đang chạy bình thường thì KHÔNG dựng lại từ đầu', C('__startAllCalls'), 0);
+eq('vẫn trả ok', r3?.ok, true);
+eq('restarted = false để popup hiện đúng nhãn', r3?.restarted, false);
+check('vẫn báo captionMode về popup', typeof r3?.captionMode === 'string', JSON.stringify(r3));
+
+C('startAll = __realStartAll;');
+
+// ═══════════ G12: lỗi trong lúc họp phải nhìn thấy được ═══════════
+// #errorMsg nằm trong #view-inactive, mà showActiveView() ẩn cả view đó. Nên
+// trong lúc họp mọi lỗi của sendToTab() ghi vào một thẻ vô hình — đúng lý do
+// nút Reload "bấm mà không thấy gì".
+group('G12 báo lỗi trong lúc họp');
+
+const html = fs.readFileSync(path.join(ROOT, 'popup.html'), 'utf8');
+const activeStart = html.indexOf('id="view-active"');
+const activeEnd   = html.indexOf('id="view-minutes"');
+const inactiveStart = html.indexOf('id="view-inactive"');
+check('#errorMsg vẫn nằm trong view-inactive (tiền đề của lỗi)',
+      html.indexOf('id="errorMsg"') > inactiveStart && html.indexOf('id="errorMsg"') < activeStart);
+check('view-active có thẻ báo lỗi riêng',
+      html.indexOf('id="activeErrorMsg"') > activeStart && html.indexOf('id="activeErrorMsg"') < activeEnd);
+check('popup.js có showTabError() chọn thẻ theo view đang mở',
+      /function showTabError/.test(popupSrc) && /activeErrorMsg/.test(popupSrc));
+check('sendToTab() báo lỗi qua showTabError chứ không ghi thẳng #errorMsg',
+      /function sendToTab[\s\S]{0,900}showTabError/.test(popupSrc)
+      && !/function sendToTab[\s\S]{0,900}getElementById\('errorMsg'\)/.test(popupSrc));
+check('nút Reload có phản hồi nhìn thấy được khi thành công',
+      /reload_capture'[\s\S]{0,200}flashBtn\('reloadBtn'/.test(popupSrc));
+check('mất kết nối thì hướng dẫn tải lại trang họp',
+      /tải lại trang họp/i.test(popupSrc));
 
 // ═════════════════════ summary ═════════════════════
 console.log('\n──────── SUMMARY ────────');

@@ -67,6 +67,15 @@ Extension cần 1 API key của Google Gemini để AI hoạt động. Cách l�
 
 > ⚠️ Quan trọng: Extension đọc phụ đề từ nền tảng để ghi transcript. Nếu không bật CC, extension sẽ dùng mic (độ chính xác thấp hơn và không nghe được tiếng của khách hàng).
 
+**Kiểm tra bằng icon CC trong popup** (cạnh tên nền tảng, ở hàng Transcript / Translate):
+
+| Icon | Nghĩa |
+|------|-------|
+| **CC** xanh | Đã tìm thấy khung phụ đề của nền tảng — đang đọc trực tiếp từ CC |
+| **CC** gạch chéo | Chưa bật CC (hoặc đã tắt giữa buổi) — extension đang dùng Microphone |
+
+Bật CC giữa buổi thì icon tự chuyển sang xanh trong vài giây, không cần bấm Reload. Ngược lại, tắt CC giữa buổi thì sau vài giây icon quay về gạch chéo và extension tự chuyển sang mic.
+
 ### 4.3. Bắt đầu ghi
 
 1. Bấm vào icon Extension
@@ -91,18 +100,22 @@ Extension cần 1 API key của Google Gemini để AI hoạt động. Cách l�
 
 Ngay cạnh tab **Transcript** có tab **Translate**. Bấm vào là xem được bản dịch tiếng Việt của đúng những gì đang hiện bên Transcript.
 
-1. Bấm tab **Translate** — dịch phần đang có rồi tự dịch tiếp mỗi khi có người nói thêm
+> ⚠️ **Mặc định tính năng này TẮT.** Mở tab Translate KHÔNG tự dịch và không gọi API lần nào — phải tự bật công tắc mới dịch. Công tắc chỉ có hiệu lực cho **cuộc họp đang mở**: cuộc họp sau lại về trạng thái tắt, nên không bao giờ có chuyện dịch âm thầm đốt token.
+
+1. Bấm tab **Translate**, rồi bật công tắc **Đã tắt → Đang bật** ở góc dưới bên trái — từ lúc đó mới dịch phần đang có và tự dịch tiếp mỗi khi có người nói thêm
 2. Trình bày giống hệt bên Transcript: `Tên người nói: nội dung đã dịch`. Tên người nói **giữ nguyên**, không dịch
 3. Câu đang nói dở (chữ xanh in nghiêng) hiển thị bản gốc — dịch ngay khi câu chốt lại
 4. **Copy** / **Tải** dùng y như bên Transcript
 5. **Dịch lại** — dịch lại toàn bộ từ đầu (khi thấy bản dịch chưa vừa ý)
-6. **Dịch phần cũ (N)** — chỉ hiện khi bạn mở tab Translate giữa một cuộc họp đã dài. Phần cũ được hoãn lại để khỏi tốn quota; bấm nút này nếu thực sự cần dịch bù
+6. **Dịch phần cũ (N)** — hiện khi có phần chưa dịch: phần ghi trong lúc công tắc tắt, hoặc phần cũ bị hoãn khi bạn bật dịch giữa một cuộc họp đã dài. Bấm nút này nếu thực sự cần dịch bù (tốn token)
+7. Tắt công tắc bất cứ lúc nào — lô đang gửi vẫn nhận kết quả (đã trả tiền rồi), còn phần chờ thì dừng lại, không gọi thêm API
 
 | Điều cần biết | Chi tiết |
 |---------------|----------|
 | Dùng API key nào? | Chính key AI đã cài trong Settings (Gemini / OpenAI / DeepSeek), có cả failover |
 | Model nào? | Bản rẻ và nhanh nhất mà key của bạn có (Flash-Lite / mini). Tự nhận model mới khi nhà cung cấp ra bản mới, không cần cập nhật extension. Bấm **Test** trong Settings để xem đang dùng model gì |
-| Popup đóng thì sao? | Việc dịch tạm dừng (Chrome huỷ popup). Mở lại popup sẽ dịch tiếp phần còn thiếu |
+| Công tắc mặc định? | **Tắt.** Chỉ bật khi bạn tự bấm, và chỉ cho cuộc họp đang mở. Bấm **Xóa transcript** cũng đưa công tắc về tắt |
+| Popup đóng thì sao? | Việc dịch tạm dừng (Chrome huỷ popup). Mở lại popup **trong cùng cuộc họp** thì công tắc giữ nguyên trạng thái bạn đã chọn và dịch tiếp phần còn thiếu |
 | Có dịch lại phần cũ không? | Không. Bản dịch được cache theo từng câu và dùng chung mọi cuộc họp — câu lặp lại (「はい」,「そうですね」) không tốn thêm token |
 | Dòng nào không tốn API? | Dòng chỉ có số/dấu câu, và dòng vốn đã là tiếng Việt — được giữ nguyên, không gửi lên AI |
 | Tốn quota nhiều không? | Gộp tới ~1200 ký tự mỗi lần gọi, chạy 3 lô song song. Tiết kiệm khoảng 60–75% so với bản 4.5 |
@@ -143,6 +156,7 @@ Ngay cạnh tab **Transcript** có tab **Translate**. Bấm vào là xem đượ
 **Q: Tại sao transcript không hiện gì?**
 - Kiểm tra đã bật Caption/Phụ đề trên Meet, Teams hoặc Zoom chưa
 - Thử bấm nút "Reload" trong overlay
+- **Zoom:** từ bản 4.9 extension tự bám theo hộp phụ đề (Zoom ẩn hộp khi không ai nói và dựng lại khi có người nói tiếp). Nếu vẫn không thấy gì, mở Console của tab Zoom (F12), chạy `localStorage.setItem('mt_debug','1')` rồi tải lại trang — log `[MeetingAI] zoom: ...` cho biết extension đang đọc phần tử nào, gửi log đó kèm ảnh chụp để được hỗ trợ
 
 **Q: Bấm "議事録作成" bị lỗi?**
 - Kiểm tra API key đã lưu đúng chưa (vào Settings → Kiểm tra API Key)
