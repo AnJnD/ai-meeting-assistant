@@ -1,102 +1,115 @@
-# AI Meeting Assistant - Hướng dẫn sử dụng
+# AI Meeting Assistant – Hướng dẫn sử dụng (v7.1)
 
 ## Tool này là gì?
 
-AI Meeting Assistant là extension (tiện ích mở rộng) cài trên trình duyệt Google Chrome, giúp bạn:
+AI Meeting Assistant là extension (tiện ích mở rộng) cài trên Google Chrome, giúp bạn:
 
-- **Ghi lại lời nói** trong cuộc họp Google Meet, Microsoft Teams hoặc Zoom theo thời gian thực
-- **Phân biệt người nói** — hiện tên từng người trong transcript
-- **Tạo biên bản họp (議事録)** bằng AI — chỉ cần 1 nút bấm, AI sẽ tóm tắt và trình bày theo format chuyên nghiệp chuẩn công ty Nhật
-
----
-
-## Bước 1: Cài đặt Extension lên Chrome
-
-1. Mở trình duyệt **Google Chrome**
-2. Vào địa chỉ: `chrome://extensions`
-3. Bật **Developer mode** (chế độ nhà phát triển) — công tắc nằm ở góc trên bên phải
-4. Bấm nút **"Load unpacked"** (Tải tiện ích đã giải nén)
-5. Chọn thư mục `ai-meeting-assistant-v2.0` (thư mục chứa các file `manifest.json`, `background.js`, ...)
-6. Extension sẽ xuất hiện trong danh sách — bạn sẽ thấy icon trên thanh công cụ Chrome
-
-> 💡 Mẹo: Bấm vào icon hình ghim (puzzle piece) trên thanh Chrome, rồi ghim "AI Meeting Assistant v2" để dễ truy cập.
+- **Chép lời** cuộc họp Google Meet, Microsoft Teams hoặc Zoom (bản web) theo thời gian thực, **tách theo từng người nói**.
+- **Ghi hình / ghi âm** cuộc họp: ghi tab cuộc họp hoặc màn hình, và đổi nguồn giữa chừng mà vẫn ra **một video**.
+- **Xem lại trong Thư viện bản ghi**: transcript khớp với video, Hỏi AI về cuộc họp, dịch tiếng Việt, tải video / âm thanh / script.
+- **Tạo biên bản họp (議事録)** bằng AI chỉ với một nút bấm, trình bày theo chuẩn công ty Nhật.
 
 ---
 
-## Bước 2: Lấy API Key (miễn phí)
+## Bước 1: Cài đặt extension lên Chrome
 
-Extension cần 1 API key của Google Gemini để AI hoạt động. Cách lấy:
+1. Mở **Google Chrome** và vào `chrome://extensions`.
+2. Bật **Developer mode** (công tắc ở góc trên bên phải).
+3. Bấm **Load unpacked** rồi chọn thư mục `ai-meeting-assistant` (thư mục chứa `manifest.json`).
+4. Icon extension sẽ xuất hiện trên thanh công cụ.
 
-1. Vào trang: **https://aistudio.google.com/apikey**
-2. Đăng nhập bằng tài khoản Google của bạn
-3. Bấm **"Create API Key"** (Tạo khóa API)
-4. Copy dãy ký tự bắt đầu bằng `AIza...`
+> 💡 Bấm icon mảnh ghép trên thanh Chrome rồi ghim "AI Meeting Assistant" để dễ mở.
 
-> ⚠️ Lưu ý: Key này miễn phí với giới hạn sử dụng nhất định mỗi ngày. Đủ dùng cho cuộc họp bình thường.
-
----
-
-## Bước 3: Cấu hình API Key trong Extension
-
-1. Bấm vào icon Extension trên thanh Chrome
-2. Chọn tab **"Settings"**
-3. Ở mục Provider, chọn **"Google Gemini"**
-4. Dán API Key vừa copy vào ô **"Gemini API Key"**
-5. Bấm **Save**
-6. (Tùy chọn) Bấm **"Kiểm tra API Key"** để xác nhận key hoạt động — sẽ hiện model đang dùng
+**Cập nhật lên bản mới:** chép đè thư mục rồi bấm **↻ Reload** ở thẻ extension trong `chrome://extensions`. **Không cần F5 tab họp**, vì F5 sẽ làm bạn rời cuộc họp. Extension tự nạp lại vào các tab Meet / Teams / Zoom đang mở. Nếu mở popup mà vẫn báo "Mất kết nối", extension sẽ tự nạp lại vào tab đó rồi thử lại.
 
 ---
 
-## Bước 4: Sử dụng trong cuộc họp
+## Bước 2: API key (chỉ cần cho tính năng AI)
 
-### 4.1. Vào phòng họp
+**Bắt transcript và ghi hình không cần API key.** Key chỉ cần cho: **議事録**, **Summary**, **Translate**, **Hỏi AI**, **Tạo transcript bằng AI**.
 
-- Mở **Google Meet** (meet.google.com), **Microsoft Teams** (teams.microsoft.com) hoặc **Zoom** (app.zoom.us — tham gia qua trình duyệt)
-- Tham gia cuộc họp bình thường
+| Nhà cung cấp | Lấy key ở đâu | Ghi chú |
+|---|---|---|
+| **Google Gemini** (khuyên dùng) | https://aistudio.google.com/apikey (key bắt đầu bằng `AIza...`) | Có gói miễn phí. Nghe được âm thanh và đọc được ảnh |
+| **OpenAI** | platform.openai.com | Nghe được âm thanh |
+| **DeepSeek** | platform.deepseek.com | Rẻ, nhưng **không nhận âm thanh** (không dùng cho chép lời bằng AI) |
 
-### 4.2. Bật phụ đề (Caption) trên nền tảng họp
+Cài key:
+1. Bấm icon extension → tab **Settings**.
+2. Chọn **Provider**, dán key, bấm **Save**.
+3. Bấm **Kiểm tra API Key** để xác nhận. Kết quả hiện cả model đang dùng.
+4. (Tuỳ chọn) Bật **Tự động chuyển API khi lỗi (Failover)**: khi nhà cung cấp chính lỗi, extension tự chuyển sang nhà cung cấp khác đã có key.
 
-**Google Meet:**
-- Bấm nút **CC** (hoặc "Turn on captions") ở thanh điều khiển phía dưới màn hình
+---
 
-**Microsoft Teams:**
-- Bấm **"..." (More)** → **"Turn on live captions"** (Bật phụ đề trực tiếp)
+## Bước 3: Sử dụng trong cuộc họp
 
-**Zoom (web client):**
-- Bấm **"Live Transcript"** (hoặc **"CC"**) ở thanh điều khiển phía dưới → chọn **"Enable"**
+### 3.1. Vào phòng họp và bật phụ đề (CC)
 
-> ⚠️ Quan trọng: Extension đọc phụ đề từ nền tảng để ghi transcript. Nếu không bật CC, extension sẽ dùng mic (độ chính xác thấp hơn và không nghe được tiếng của khách hàng).
+Mở **Google Meet** (meet.google.com), **Microsoft Teams** (teams.microsoft.com) hoặc **Zoom** (app.zoom.us, tham gia qua trình duyệt), rồi bật phụ đề:
 
-**Kiểm tra bằng icon CC trong popup** (cạnh tên nền tảng, ở hàng Transcript / Translate):
+- **Google Meet:** bấm nút **CC** ở thanh điều khiển.
+- **Microsoft Teams:** bấm **… (More)** → **Turn on live captions**.
+- **Zoom (web):** bấm **Live Transcript / CC** → **Enable**.
+
+> ⚠️ Extension đọc phụ đề của nền tảng để chép lời. Nếu không bật CC, extension dùng mic (kém chính xác hơn và không nghe được người khác).
+
+**Icon CC trong popup** (ở hàng Transcript / Translate):
 
 | Icon | Nghĩa |
 |------|-------|
-| **CC** xanh | Đã tìm thấy khung phụ đề của nền tảng — đang đọc trực tiếp từ CC |
-| **CC** gạch chéo | Chưa bật CC (hoặc đã tắt giữa buổi) — extension đang dùng Microphone |
+| **CC** xanh | Đang đọc trực tiếp từ phụ đề |
+| **CC** gạch chéo | Chưa bật CC (hoặc đã tắt giữa buổi), extension đang dùng mic |
 
-Bật CC giữa buổi thì icon tự chuyển sang xanh trong vài giây, không cần bấm Reload. Ngược lại, tắt CC giữa buổi thì sau vài giây icon quay về gạch chéo và extension tự chuyển sang mic.
+Bật hoặc tắt CC giữa buổi thì icon tự đổi sau vài giây.
 
-### 4.3. Bắt đầu ghi
+> 💡 **Standby Mode:** ngay khi mở trang họp, extension đã ngầm chép phụ đề dù bạn chưa bấm gì. Lúc bấm **Bắt đầu**, phần đã nói trước đó hiện ra ngay.
 
-1. Bấm vào icon Extension
-2. Bấm **"Start AI Assistant"**
-3. Một cửa sổ nhỏ (overlay) sẽ hiện lên góc màn hình
-4. Transcript bắt đầu hiển thị theo thời gian thực
+### 3.2. Bắt đầu
 
-### 4.4. Các nút trong overlay
+1. Bấm icon extension → tab **Control** → **Bắt đầu**.
+2. Bảng chọn cách ghi hình hiện ra, **luôn chọn sẵn Tab + 1080p**:
+   - **Nguồn:** **Tab** (ghi tab cuộc họp, có sẵn tiếng), **Màn hình** (Chrome hỏi bạn chọn màn hình / cửa sổ / tab), hoặc **Không ghi** (chỉ lấy transcript).
+   - **Chất lượng:** 720p / 1080p / 2K / Chỉ tiếng.
+   - **Micro:** ghi kèm giọng của bạn.
+3. Bấm **Bắt đầu** lần nữa. Muốn nhanh thì cứ bấm **Bắt đầu** hai lần là ghi Tab 1080p.
+
+> Lần đầu ghi kèm micro, extension mở một trang để bạn **cấp quyền micro một lần**. Nếu chưa cấp, extension vẫn ghi nhưng không có micro và báo trong popup.
+
+### 3.3. Đọc header của popup
+
+Góc trên bên phải popup chỉ có **2 khối**:
+
+| Khối | Nghĩa |
+|---|---|
+| `● 12:34` **xanh lá** (chấm trắng nhấp nháy) | Đang chép transcript |
+| `II 12:34` **vàng** | Transcript đang tạm dừng |
+| `● Tab 12:34` / `● Màn hình 12:34` **đỏ** | Đang ghi hình. Bấm vào để sang tab **Record** |
+| `Chưa hoạt động` | Chưa bấm Bắt đầu |
+
+Khi đang ghi hình, icon extension có thêm **chấm đỏ nhỏ**.
+
+### 3.4. Các nút trong tab Control
+
+**Control là bảng chính**: thao tác ở đây kéo theo cả bản ghi hình.
 
 | Nút | Chức năng |
 |-----|-----------|
-| **Copy** | Copy nội dung transcript vào clipboard |
-| **DL Script** | Tải transcript về máy dạng file .txt |
-| **Xóa** | Xóa transcript hiển thị (dữ liệu tích lũy vẫn giữ) |
-| **Reset** (nút đỏ) | Xóa TOÀN BỘ dữ liệu đã tích lũy — không phục hồi được |
-| **Tạo 議事録** | AI tạo biên bản họp từ transcript |
-| **Copy** (ở 議事録) | Copy biên bản họp |
-| **DL MM** | Tải biên bản họp về máy dạng file .txt |
-| **Xóa** (ở 議事録) | Xóa nội dung biên bản họp vừa tạo |
+| **Tạm dừng** | Dừng chép transcript **và** tạm dừng bản ghi hình |
+| **Tiếp tục** | Chép tiếp và ghi tiếp, giữ nguyên nguồn ghi đang dùng |
+| **Kết thúc** | Dừng hẳn. Bản ghi hình được **lưu vào Thư viện**, transcript ở Control được xoá để sẵn sàng cho phiên mới. Script vẫn tải lại được trong Thư viện |
+| **Meeting Minutes** | AI tạo biên bản họp 議事録 (xem mục 3.6) |
+| **Copy** | Copy transcript |
+| **Tải** | Tải **cả transcript lẫn video / âm thanh** của phiên đang diễn ra |
+| **Xoá** | Xoá transcript đang hiển thị |
+| **Reload** | Khởi động lại việc nhận dạng |
+| **Ghi tab này** | Hiện khi đang họp mà chưa ghi hình. Bấm để ghi nhanh tab này (1080p) |
 
-### 4.5. Xem bản dịch tiếng Việt (tab Translate)
+> Tạm dừng / Dừng ở **tab Record** chỉ tác động lên bản ghi hình, không ảnh hưởng transcript ở Control.
+
+Phím tắt **Alt+Shift+M** = Tạm dừng / Tiếp tục (giống nút ở Control).
+
+### 3.5. Xem bản dịch tiếng Việt (tab Translate)
 
 Ngay cạnh tab **Transcript** có tab **Translate**. Bấm vào là xem được bản dịch tiếng Việt của đúng những gì đang hiện bên Transcript.
 
@@ -121,47 +134,72 @@ Ngay cạnh tab **Transcript** có tab **Translate**. Bấm vào là xem đượ
 | Tốn quota nhiều không? | Gộp tới ~1200 ký tự mỗi lần gọi, chạy 3 lô song song. Tiết kiệm khoảng 60–75% so với bản 4.5 |
 | Nếu API lỗi / không phản hồi? | Thử lại tối đa 3 lần rồi dừng và hiện **bản gốc** để bạn vẫn đọc được, kèm cảnh báo ⚠. Bấm **Dịch lại** để thử tiếp |
 
-### 4.6. Tạo biên bản họp (議事録)
 
-1. Để cuộc họp diễn ra — transcript sẽ tự động tích lũy
-2. Khi muốn tạo biên bản, bấm **"Tạo 議事録"**
-3. Đợi 10-30 giây để AI xử lý
-4. Kết quả hiện thị ngay trong overlay
-5. Bấm **Copy** hoặc **DL MM** để lưu lại
+### 3.6. Tạo biên bản họp (議事録)
 
-### 4.7. Ghi hình / ghi âm cuộc họp (tab Record) — mới ở bản 5.0
+1. Để cuộc họp diễn ra, transcript sẽ tự tích lũy.
+2. Bấm **Meeting Minutes**: AI tự tạo biên bản (nếu đã có thì hiện lại bản đã tạo). AI cần khoảng 10–30 giây (DeepSeek có thể tới 1–1,5 phút).
+3. Bấm **Copy**, **.txt** hoặc **.docx** để lưu lại.
 
-> ⚠️ **Người tham gia KHÔNG được thông báo** khi bạn ghi bằng extension (khác với nút Record có sẵn của Meet/Teams/Zoom). Hãy xin phép mọi người trước khi ghi.
+Bạn cũng tạo được 議事録 sau cuộc họp, từ bản ghi trong **Thư viện bản ghi**. Biên bản khi đó mang đúng ngày ghi.
 
-1. Bấm icon extension → tab **Record** → chọn **Nguồn ghi**:
-   - **Tab này**: ghi tab Chrome đang mở (Meet / Teams / Zoom bản web…). Không cần chọn gì thêm, có sẵn tiếng của tab
-   - **Màn hình / cửa sổ** (bản 5.2): sau khi bấm *Bắt đầu ghi*, Chrome hỏi bạn chọn **Toàn màn hình**, **Cửa sổ** hoặc **Tab**. Dùng để ghi **app Teams/Zoom cài trên máy**, slide, phần mềm khác…
-2. Chọn chế độ:
-   - **Hình + tiếng**: ghi video của tab (720p / 1080p / 2K)
-   - **Chỉ tiếng**: chỉ ghi âm thanh của tab (file nhỏ, hợp cho podcast / bài giảng)
-3. **Ghi kèm micro của tôi** (bật sẵn): tiếng của tab chỉ có giọng người khác, nên cần micro để bản ghi có cả giọng bạn. Lần đầu, extension mở một trang để bạn **cấp quyền micro một lần**. Cấp xong thì quay lại tab cuộc họp và bấm ghi lại
-   - **Micro** (bản 5.4): chọn micro cụ thể (tai nghe, micro USB…). Lựa chọn được nhớ. Nếu lúc ghi không thấy micro đó (đã rút ra), extension dùng micro mặc định và báo trong popup. Tên micro chỉ hiện sau khi đã cấp quyền micro
-4. **Định dạng** (bản 5.4, chỉ khi ghi hình):
-   - **MP4 (H.264)** — mặc định. Card đồ hoạ thường nén hộ nên **nhẹ máy**, ít làm cuộc họp bị giật. File mở được ở mọi trình phát, gửi qua Slack/Teams/email dễ dàng
-   - **WebM (VP9)** — nét hơn ở cùng dung lượng nhưng nén bằng CPU, tốn máy hơn
-5. Bấm **Bắt đầu ghi**. Icon extension hiện chữ **REC** đỏ, popup có đồng hồ đếm giờ. **Đóng popup thì việc ghi vẫn tiếp tục**
-6. **Tạm dừng / Tiếp tục** tuỳ ý. Phần tạm dừng không có trong file
-7. **📌 Đánh dấu** (bản 5.4): khi có ý quan trọng, bấm **Đánh dấu** trong popup (có thể gõ kèm ghi chú, ví dụ "cần follow-up"), hoặc bấm **Alt+Shift+K** ở bất kỳ đâu trong Chrome mà không cần mở popup. Badge nháy **OK** màu xanh là đã đánh dấu. Đổi phím tắt tại `chrome://extensions/shortcuts`
-8. Bấm **Dừng & lưu** khi xong. Đóng tab cuộc họp hoặc rời cuộc họp cũng tự dừng và lưu
+### 3.7. Ghi hình / ghi âm (tab Record)
 
-**Thư viện bản ghi** (nút ở cuối tab Record):
-- Xem lại video/âm thanh. **Transcript nằm bên cạnh và khớp với video**: bấm một câu là video nhảy tới đúng chỗ đó, câu đang phát được tô sáng
-- Tìm trong transcript (không cần gõ dấu: "hop dong" tìm được "hợp đồng"), đổi tên bản ghi
-- **🔎 Tìm trong mọi bản ghi** (bản 5.4): ô tìm kiếm phía trên danh sách. Tìm theo tên bản ghi, lời nói (CC/AI), bản dịch tiếng Việt và ghi chú của mốc. Kết quả hiện từng câu khớp kèm mốc thời gian; bấm vào là mở bản ghi và nhảy tới đúng câu đó. Bấm **Esc** để quay lại danh sách
-- **🇻🇳 Dịch VI** (bản 5.4): bấm nút **Dịch VI** cạnh ô tìm kiếm để hiện bản dịch tiếng Việt dưới mỗi câu. Bản dịch được lưu lại, lần sau mở không phải dịch lại. Khi đang bật, **Tải transcript** kèm cả bản dịch. Dùng model rẻ nhất (giống Live Translate); chỉ gửi **chữ**, không gửi âm thanh
-- **📌 Mốc đã đánh dấu** (dưới video): bấm để nhảy tới mốc, ✎ sửa ghi chú, × xoá. Nút **+ Đánh dấu tại đây** đánh dấu vị trí đang phát. Các mốc cũng hiện xen trong transcript
-- **Tải video** (.mp4 hoặc .webm), **Tải âm thanh** (bản mono nhẹ đi kèm video), **Tải transcript** (.txt có mốc `[mm:ss]`)
-- **Tạo 議事録** từ bản ghi, mang đúng ngày ghi. Tải về .txt / .docx
-- **Xoá video, giữ âm thanh** (bản 5.4): bỏ phần hình để giải phóng ổ đĩa (1 giờ 1080p ≈ 1,3 GB), nhưng vẫn giữ âm thanh (mono, đủ nghe rõ lời nói), transcript, bản dịch, 議事録, mốc và Hỏi AI. Vẫn tạo/chép lại transcript AI được
-- **Dọn dung lượng…** (góc trên bên phải): xoá video của mọi bản ghi cũ hơn N ngày (mặc định 30) trong một lần. Khi ổ đĩa còn dưới 5 GB, dòng dung lượng chuyển màu cảnh báo
-- **Xoá** bản ghi để xoá hẳn mọi thứ
+> ⚠️ **Người tham gia KHÔNG được thông báo** khi bạn ghi bằng extension (khác với nút Record có sẵn của Meet / Teams / Zoom). Hãy xin phép mọi người trước khi ghi.
 
-### 4.8. Transcript bằng AI & Hỏi AI về bản ghi (bản 5.1)
+Thường thì bạn bắt đầu ghi từ nút **Bắt đầu** ở Control (mục 3.2). Tab **Record** dùng để xem chi tiết, đổi nguồn ghi và chỉnh các tuỳ chọn:
+
+- **Nguồn ghi:**
+  - **Tab này:** ghi tab Chrome đang mở, có sẵn tiếng của tab.
+  - **Màn hình / cửa sổ:** Chrome hỏi bạn chọn **Toàn màn hình**, **Cửa sổ** hoặc **Tab**. Dùng khi họp bằng **app Teams / Zoom cài trên máy**, hoặc để ghi slide, phần mềm khác.
+- **Hình + tiếng** (720p / 1080p / 2K) hoặc **Chỉ tiếng** (file nhỏ).
+- **Định dạng:** **MP4 (H.264)** là mặc định, nhẹ máy và mở được ở mọi nơi. **WebM (VP9)** nét hơn nhưng tốn CPU hơn.
+- **Ghi kèm micro của tôi** và chọn micro cụ thể (tai nghe, micro USB…). Nếu micro đã chọn bị rút ra, extension dùng micro mặc định và báo trong popup.
+- **🎙 Micro đi theo nút mic của cuộc họp** (Meet / Teams / Zoom bản web):
+  - Bạn **mute** trong cuộc họp thì bản ghi **không thu giọng bạn**. Bật mic lại thì thu tiếp, vẫn trong cùng một video.
+  - Dòng thông tin trong tab Record hiện *"micro: đang tắt theo cuộc họp"*.
+  - Họp bằng app cài trên máy thì extension không đọc được nút mic, nên micro luôn thu.
+- **📌 Đánh dấu:** bấm **Đánh dấu** (có thể gõ kèm ghi chú) hoặc phím tắt **Alt+Shift+K** ở bất kỳ đâu trong Chrome. Badge nháy **OK** màu xanh là đã đánh dấu. Đổi phím tắt tại `chrome://extensions/shortcuts`.
+- **Tạm dừng / Tiếp tục / Dừng & lưu** chỉ tác động lên bản ghi hình. Đóng tab họp hoặc rời cuộc họp cũng tự dừng và lưu. **Đóng popup thì vẫn ghi tiếp.**
+
+#### Đổi nguồn giữa chừng: vẫn một video
+
+Đang ghi thì vẫn đổi được nguồn **Tab ⇄ Màn hình**, kết quả vẫn là **một file video liền mạch**.
+
+**Ví dụ: đang họp Teams, đến lượt bạn thuyết trình bằng cách share một tab khác:**
+
+1. Bắt đầu như bình thường: ghi **Tab** (tab Teams).
+2. Khi share, mở popup → tab **Record** → **Chuyển sang ghi màn hình / tab đang share**, rồi chọn tab hoặc màn hình bạn đang share.
+3. Bản ghi lấy **hình từ phần đang share**, còn **tiếng vẫn lấy từ tab Teams**, nên vẫn nghe được mọi người.
+4. Share xong: bấm **Quay lại ghi tab cuộc họp**, hoặc bấm **Dừng chia sẻ** trên thanh của Chrome. Extension tự quay lại ghi tab Teams.
+
+### 3.8. Thư viện bản ghi
+
+Mở Thư viện bằng nút **Thư viện bản ghi** ở cuối tab Record, hoặc **Settings → Lịch sử cuộc họp → Mở Thư viện bản ghi**.
+
+**Thời gian lưu:**
+- Thư viện giữ tối đa **15 bản ghi** và **15 script** gần nhất. **Mỗi bản tối đa 7 ngày**, quá hạn thì tự xoá.
+- Mỗi bản ghi có nhãn hạn xoá: **"Xoá sau: 3 ngày"**, hoặc **"Xoá khi có bản mới"** nếu thư viện đã đủ 15 bản và đây là bản cũ nhất. Mở bản ghi sẽ thấy ngày giờ tự xoá chính xác.
+- Muốn giữ lâu hơn thì **tải về**.
+
+**Trong mỗi bản ghi:**
+- Xem lại video / âm thanh. **Transcript nằm bên cạnh và khớp với video**: bấm một câu là video nhảy tới đúng chỗ đó, câu đang phát được tô sáng.
+- Tìm trong transcript (không cần gõ dấu: "hop dong" tìm được "hợp đồng"). Đổi được tên bản ghi.
+- **🇻🇳 Dịch VI:** hiện bản dịch tiếng Việt dưới mỗi câu. Bản dịch được lưu lại. Khi đang bật, **Tải transcript** kèm cả bản dịch.
+- **📌 Mốc đã đánh dấu** (dưới video): bấm để nhảy tới mốc, ✎ để sửa ghi chú, × để xoá. **+ Đánh dấu tại đây** đánh dấu vị trí đang phát.
+- **Tải video** (.mp4 / .webm), **Tải âm thanh** (bản mono nhẹ), **Tải transcript** (.txt có mốc `[mm:ss]`).
+- **Tạo 議事録** từ bản ghi, tải về .txt / .docx.
+- **Xoá video, giữ âm thanh:** bỏ phần hình để giải phóng ổ đĩa (1 giờ 1080p ≈ 1,3 GB) nhưng vẫn giữ âm thanh, transcript, bản dịch, 議事録, mốc và Hỏi AI.
+- **Xoá** để xoá hẳn bản ghi.
+
+**Chung cho cả Thư viện:**
+- **🔎 Tìm trong mọi bản ghi** (ô phía trên danh sách): tìm theo tên, lời nói, bản dịch và ghi chú của mốc. Bấm kết quả là nhảy tới đúng câu. **Esc** để quay lại danh sách.
+- **Script cuộc họp** (cột trái, dưới danh sách bản ghi):
+  - Gồm transcript và 議事録 của các phiên họp gần nhất, **kể cả phiên không ghi hình**.
+  - Mỗi phiên có nút **Script**, **議事録** và **Xoá**.
+- **Dọn dung lượng…** (góc trên bên phải): xoá phần video của mọi bản ghi cũ hơn N ngày (mặc định 2) trong một lần. Khi ổ đĩa còn dưới 5 GB, dòng dung lượng chuyển màu cảnh báo.
+
+### 3.9. Transcript bằng AI & Hỏi AI về bản ghi
 
 **⚡ Có transcript ngay khi dừng ghi (bản 5.3).** Trước khi ghi, tick **"Chép lời bằng AI ngay trong lúc ghi"** trong tab Record (lựa chọn được nhớ cho lần sau):
 - Trong lúc ghi, cứ mỗi **2 phút** âm thanh được gửi cho AI chép lời. Popup hiện "AI đã chép N câu"
@@ -201,61 +239,67 @@ Ngay cạnh tab **Transcript** có tab **Translate**. Bấm vào là xem đượ
 
 | Câu hỏi | Trả lời |
 |---|---|
-| Bản ghi lưu ở đâu? | Chỉ trên máy này (IndexedDB của Chrome). Không tải lên đâu cả. Xoá extension thì bản ghi cũng mất, vì vậy hãy **tải về** những bản ghi cần giữ |
-| Dung lượng? | Mức tối đa mỗi giờ: 720p ≈ 0.7 GB, 1080p ≈ 1.4 GB, 2K ≈ 2.3 GB. Màn hình họp phần lớn đứng yên nên file thật thường nhỏ hơn. Chỉ tiếng ≈ 45 MB/giờ |
-| Vì sao bản ghi không có transcript? | Transcript tự động lấy từ phụ đề (CC), nên hãy **bật CC** trong lúc ghi. Nếu quên bật, dùng **Tạo transcript bằng AI** (mục 4.8) |
-| Ghi được trang khác ngoài Meet/Teams/Zoom không? | Được. Ghi được mọi tab web (YouTube, bài giảng…), nhưng chỉ Meet/Teams/Zoom mới có transcript |
-| Ghi được cửa sổ khác / cả màn hình / app Teams cài trên máy không? | Được (bản 5.2). Chọn nguồn **Màn hình / cửa sổ**. Xem mục âm thanh ngay dưới |
-| Ghi app Teams/Zoom cài trên máy mà có tiếng? | Chọn **Toàn màn hình** và bật **Chia sẻ âm thanh hệ thống** trong hộp chọn của Chrome (có trên Windows). Bật thêm **micro** để có giọng bạn. Lưu ý: âm thanh hệ thống gồm mọi âm thanh của máy, kể cả tiếng thông báo |
-| Chọn **Cửa sổ** thì sao? | Chrome không ghi được tiếng hệ thống khi chọn một cửa sổ, nên bản ghi chỉ có giọng bạn qua micro. Popup sẽ cảnh báo. Tắt cả micro thì bản ghi không có âm thanh và không tạo được transcript |
-| macOS? | Ghi hình màn hình/cửa sổ được. Âm thanh hệ thống tuỳ phiên bản macOS/Chrome, có thể không có; khi đó dùng micro |
-| Dừng ghi màn hình thế nào? | Bấm **Dừng & lưu** trong popup, hoặc nút **Dừng chia sẻ** trên thanh của Chrome. Cả hai đều lưu bản ghi |
-| Bản ghi màn hình có transcript không? | Nếu lúc bấm ghi bạn đang ở tab **Meet/Teams/Zoom bản web** có bật CC, transcript CC được gắn vào bản ghi. Còn lại (vd. app Teams cài trên máy) thì dùng **Tạo transcript bằng AI** |
-| Chrome bị tắt đột ngột khi đang ghi? | Các đoạn đã ghi (cứ 5 giây một đoạn) vẫn còn. Bản ghi hiện trong thư viện với nhãn **Bị gián đoạn** và vẫn xem/tải được |
-| File .webm mở bằng gì? | Chrome, VLC, hoặc kéo thẳng vào trình duyệt. Từ bản 5.4, video mặc định là **.mp4**, mở được ở mọi nơi |
+| Bản ghi lưu ở đâu? | Chỉ trên máy này (IndexedDB của Chrome), không tải lên đâu cả. Xoá extension thì bản ghi cũng mất, nên hãy **tải về** những bản cần giữ |
+| Dung lượng? | Mức tối đa mỗi giờ: 720p ≈ 0,7 GB, 1080p ≈ 1,4 GB, 2K ≈ 2,3 GB. Màn hình họp phần lớn đứng yên nên file thật thường nhỏ hơn. Chỉ tiếng ≈ 45 MB/giờ |
+| Vì sao bản ghi không có transcript? | Transcript tự động lấy từ phụ đề (CC), nên hãy **bật CC** trong lúc ghi. Nếu quên bật, dùng **Tạo transcript bằng AI** (mục 3.9) |
+| Ghi được trang khác ngoài Meet / Teams / Zoom không? | Được. Ghi được mọi tab web, nhưng chỉ Meet / Teams / Zoom mới có transcript CC |
+| Ghi app Teams / Zoom cài trên máy mà có tiếng? | Chọn **Màn hình** → **Toàn màn hình** và bật **Chia sẻ âm thanh hệ thống** trong hộp chọn của Chrome (có trên Windows). Bật thêm **micro** để có giọng bạn. Âm thanh hệ thống gồm mọi âm thanh của máy, kể cả tiếng thông báo |
+| Chọn **Cửa sổ** thì sao? | Chrome không ghi được tiếng hệ thống khi chọn một cửa sổ, nên bản ghi chỉ có giọng bạn qua micro. Popup sẽ cảnh báo |
+| macOS? | Ghi màn hình / cửa sổ được. Âm thanh hệ thống tuỳ phiên bản macOS / Chrome, có thể không có; khi đó dùng micro |
+| Dừng ghi màn hình thế nào? | Bấm **Kết thúc** ở Control, **Dừng & lưu** ở tab Record, hoặc **Dừng chia sẻ** trên thanh của Chrome. Nếu đang ghi phần share của bản ghi Tab, Dừng chia sẻ sẽ quay lại ghi tab họp, không dừng bản ghi |
+| Bản ghi màn hình có transcript không? | Có, nếu lúc bấm ghi bạn đang ở tab **Meet / Teams / Zoom bản web** có bật CC. Còn lại (vd. app cài trên máy) thì dùng **Tạo transcript bằng AI** |
+| Chrome bị tắt đột ngột khi đang ghi? | Các đoạn đã ghi (cứ 5 giây một đoạn) vẫn còn. Bản ghi hiện trong Thư viện với nhãn **Bị gián đoạn** và vẫn xem / tải được |
 
 ---
 
 ## Các tính năng đặc biệt
 
-### Standby Mode (Tự động ghi ngầm)
+### Standby Mode (tự động chép ngầm)
 
-- Khi bạn mở trang Google Meet, Teams hoặc Zoom, extension tự động bắt đầu theo dõi phụ đề ngầm
-- Bạn không cần bấm "Start" — dữ liệu đã được ghi từ lúc bắt đầu họp
-- Khi bạn bấm "Start", toàn bộ dữ liệu trước đó sẽ hiện lên ngay
+- Khi bạn mở trang Google Meet, Teams hoặc Zoom, extension tự động theo dõi phụ đề ngầm.
+- Không cần bấm **Bắt đầu**: lời nói đã được chép từ lúc bắt đầu họp. Bấm Bắt đầu thì phần trước đó hiện lên ngay.
+- Chỉ chạy trên 5 domain: `meet.google.com`, `teams.microsoft.com`, `teams.live.com`, `app.zoom.us`, `zoom.us`.
 
 ### Tự động lưu
 
-- Transcript được tự động lưu mỗi 15 giây
-- Nếu bạn tắt trình duyệt rồi mở lại (trong vòng 6 tiếng), dữ liệu vẫn còn
+- Transcript được tự động lưu mỗi 15 giây, nên tắt popup, tắt trình duyệt hay reload extension đều không mất.
+- Mỗi phiên họp được lưu vào **Script cuộc họp** trong Thư viện (15 phiên gần nhất, tối đa 7 ngày), kể cả khi bạn đóng tab họp mà không bấm Kết thúc.
 
 ### Tự động chọn model AI mới nhất
 
-- Extension tự động detect và sử dụng model Gemini Flash mới nhất
-- Khi Google ra model mới, không cần update extension
+- Extension hỏi danh sách model của nhà cung cấp rồi tự chọn: biên bản / Hỏi AI dùng bản Flash mới nhất, Translate dùng bản rẻ nhất (Flash-Lite / mini).
+- Nhà cung cấp ra model mới là tự dùng, không cần cập nhật extension.
 
 ---
 
 ## Câu hỏi thường gặp
 
-**Q: Tại sao transcript không hiện gì?**
-- Kiểm tra đã bật Caption/Phụ đề trên Meet, Teams hoặc Zoom chưa
-- Thử bấm nút "Reload" trong overlay
-- **Zoom:** từ bản 4.9 extension tự bám theo hộp phụ đề (Zoom ẩn hộp khi không ai nói và dựng lại khi có người nói tiếp). Nếu vẫn không thấy gì, mở Console của tab Zoom (F12), chạy `localStorage.setItem('mt_debug','1')` rồi tải lại trang — log `[MeetingAI] zoom: ...` cho biết extension đang đọc phần tử nào, gửi log đó kèm ảnh chụp để được hỗ trợ
+**Q: Mở popup báo "Mất kết nối với trang họp"?**
+- Thường xảy ra ngay sau khi reload hoặc cập nhật extension. Từ bản 7.0, extension **tự nạp lại vào tab họp**, nên chỉ cần đóng rồi mở lại popup.
+- Chỉ F5 khi thông báo vẫn còn (lưu ý: F5 sẽ làm bạn rời cuộc họp).
 
-**Q: Bấm "議事録作成" bị lỗi?**
-- Kiểm tra API key đã lưu đúng chưa (vào Settings → Kiểm tra API Key)
-- Nếu hiện "quota hết" — đợi 1 phút rồi thử lại, hoặc tạo API key mới
+**Q: Tại sao transcript không hiện gì?**
+- Kiểm tra đã bật phụ đề (CC) trên Meet, Teams hoặc Zoom chưa.
+- Thử bấm nút **Reload** trong tab Control.
+- **Zoom:** nếu vẫn không thấy gì, mở Console của tab Zoom (F12), chạy `localStorage.setItem('mt_debug','1')` rồi tải lại trang. Log `[MeetingAI] zoom: ...` cho biết extension đang đọc phần tử nào; gửi log đó kèm ảnh chụp để được hỗ trợ.
+
+**Q: Mute mic trong cuộc họp mà video vẫn có giọng mình?**
+- Từ bản 6.9, micro của bản ghi tự tắt theo nút mic của Meet / Teams / Zoom bản web. Kiểm tra tab Record có hiện *"micro: đang tắt theo cuộc họp"* khi bạn mute không.
+- Nếu không hiện, có thể nền tảng vừa đổi giao diện. Khi đó extension giữ micro **bật** để không làm mất giọng bạn; hãy báo lại để được cập nhật.
+
+**Q: Bấm 議事録 bị lỗi?**
+- Kiểm tra API key đã lưu đúng chưa (Settings → **Kiểm tra API Key**).
+- Báo "quota hết": đợi 1 phút rồi thử lại, hoặc dùng key khác / bật **Failover**.
+- DeepSeek báo "dùng hết token cho phần suy nghĩ": thử lại, hoặc đổi sang Gemini / OpenAI.
 
 **Q: Có an toàn không? Dữ liệu đi đâu?**
-- Transcript và bản ghi hình chỉ lưu trên máy của bạn (Chrome storage / IndexedDB)
-- Nội dung chỉ được gửi lên API của AI (Gemini / OpenAI / DeepSeek) khi bạn **tạo 議事録**, **bật Live Translate** hoặc **Hỏi AI**. File video không bao giờ được gửi đi. Âm thanh chỉ được gửi khi bạn bấm **Tạo transcript bằng AI** và xác nhận
-- Nếu bật **Failover**, khi provider chính lỗi thì nội dung sẽ được gửi sang provider dự phòng
-- Không có server trung gian nào
+- Transcript, bản ghi hình và 議事録 chỉ lưu trên máy của bạn (Chrome storage / IndexedDB). Không có server trung gian.
+- Nội dung chỉ được gửi lên AI (Gemini / OpenAI / DeepSeek) khi bạn **chủ động bấm** 議事録, Summary, Hỏi AI, Dịch VI, **bật** Translate, hoặc **bật** "Chép lời bằng AI ngay trong lúc ghi".
+- File video không bao giờ được gửi đi. Âm thanh chỉ được gửi khi bạn bấm **Tạo transcript bằng AI** và xác nhận, hoặc bật chép lời trong lúc ghi.
+- Nếu bật **Failover**, khi nhà cung cấp chính lỗi thì nội dung được gửi sang nhà cung cấp dự phòng.
 
-**Q: Dùng được trên máy tính nào?**
-- Bất kỳ máy tính nào có Google Chrome (Windows, Mac, Linux)
-- Không hỗ trợ trình duyệt khác (Firefox, Safari, Edge)
+**Q: Dùng được trên máy nào?**
+- Mọi máy có Google Chrome (Windows, Mac, Linux). Không hỗ trợ Firefox / Safari.
 
 ---
 
@@ -263,11 +307,11 @@ Ngay cạnh tab **Transcript** có tab **Translate**. Bấm vào là xem đượ
 
 ```
 1. Cài extension vào Chrome (Load unpacked)
-2. Lấy API key tại aistudio.google.com/apikey
-3. Dán key vào Settings của extension
-4. Vào họp, bật Caption
-5. Bấm Start → transcript tự chạy
-6. Cuối họp bấm "議事録作成" → AI tạo biên bản
-7. Copy hoặc Download kết quả
-8. (Tuỳ chọn) Tab Record → Bắt đầu ghi → Dừng & lưu → xem lại trong Thư viện bản ghi
+2. (Tuỳ chọn) Lưu API key trong Settings — chỉ cần cho 議事録 / Dịch / Hỏi AI
+3. Vào họp, bật phụ đề (CC)
+4. Control → Bắt đầu → (mặc định Tab + 1080p + micro) → Bắt đầu
+5. Thuyết trình bằng share? Record → Chuyển sang ghi màn hình / tab đang share
+6. Meeting Minutes → AI tạo 議事録 → Copy / .txt / .docx
+7. Kết thúc → bản ghi tự lưu vào Thư viện
+8. Xem lại / tải video, âm thanh, script: Settings → Mở Thư viện bản ghi
 ```
