@@ -12,7 +12,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..', 'ai-meeting-assistant');
-const contentSrc = fs.readFileSync(path.join(ROOT, 'content.js'), 'utf8');
+const contentSrc = fs.readFileSync(path.join(ROOT, 'content.js'), 'utf8')
+  // content.js bọc trong { } (để nạp lại được) — bỏ khối để test đọc được biến toàn cục
+  .replace('{ // MT_CONTENT_BLOCK_OPEN', '').replace('} // MT_CONTENT_BLOCK_CLOSE', '');
 const popupSrc   = fs.readFileSync(path.join(ROOT, 'popup.js'), 'utf8');
 
 // ───────────────────────── test bookkeeping ─────────────────────────
@@ -441,11 +443,14 @@ setTranscript('Trần Thị Hồng Nhung: cuộc họp tuần sau bắt đầu')
 h = getHistory();
 eq('new session same mk → second entry', h.length, 2);
 
-// HISTORY_MAX enforcement
+// HISTORY_MAX enforcement (15): 12 phiên đệm + m3 + m4 → tổng 16, cắt còn 15
+for (let n = 5; n <= 16; n++) {
+  setTranscript(`Speaker: phiên đệm số ${n} dài hơn hai mươi ký tự`); upsertHistory('teams:pad' + n);
+}
 setTranscript('Speaker: nội dung cuộc họp số ba dài hơn hai mươi ký tự'); upsertHistory('teams:m3');
 setTranscript('Speaker: nội dung cuộc họp số bốn dài hơn hai mươi ký tự'); upsertHistory('teams:m4');
 h = getHistory();
-eq('capped at HISTORY_MAX=3', h.length, 3);
+eq('capped at HISTORY_MAX=15', h.length, 15);
 eq('newest first', h[0]?.mk, 'teams:m4');
 check('oldest (T3 session) evicted', !h.some(e => e.transcript === LONG));
 
@@ -465,7 +470,7 @@ check('saveToHistory extracted from popup.js', fnStart > 0 && fnEnd > fnStart);
 const popupSandbox = {
   chrome: chromeStub, console,
   LIVE_PREFIX: 'mt_live:', GIJIROKU_PREFIX: 'mt_giji:',
-  HISTORY_KEY: 'mt_history', HISTORY_MAX: 3, HISTORY_TTL_MS: 7 * 24 * 60 * 60 * 1000,
+  HISTORY_KEY: 'mt_history', HISTORY_MAX: 15, HISTORY_TTL_MS: 7 * 24 * 60 * 60 * 1000,
   currentLiveKey: 'mt_live:teams:m4', currentGijirokuKey: 'mt_giji:teams:m4',
   Promise, Date, JSON,
 };
@@ -486,7 +491,7 @@ const m4After = h.find(e => e.mk === 'teams:m4');
 eq('entry id preserved', m4After?.id, m4Before?.id);
 eq('longer popup transcript wins', m4After?.transcript, popupTranscript);
 eq('minutes from popup giji', m4After?.minutes, 'MINUTES cuối buổi');
-eq('history still capped', h.length <= 3, true);
+eq('history still capped', h.length <= 15, true);
 
 // reverse direction: content upsert AFTER popup save must also dedup
 setTranscript(popupTranscript); upsertHistory('teams:m4');

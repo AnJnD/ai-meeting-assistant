@@ -117,7 +117,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'settings') renderHistory();
   });
 });
 
@@ -281,7 +280,7 @@ function fmtMs(ms) {
 }
 
 function updateTimerDisplay(ms) {
-  const el = document.getElementById('recTimer');
+  const el = document.getElementById('recTimerText');
   if (el) el.textContent = fmtMs(ms);
 }
 
@@ -355,16 +354,19 @@ function showActiveView() {
   document.getElementById('stopBtn').style.display   = '';
   document.getElementById('resumeBtn').style.display = 'none';
 
-  const pill = document.getElementById('statusPill');
-  pill.className = 'status-pill active';
-  pill.innerHTML = '<span class="s-dot"></span> Đang ghi';
+  // Header gọn: trạng thái gộp vào ô đồng hồ (chấm xanh nhấp nháy) → chỉ còn
+  // 2 khối: [● 02:58] transcript và [● Màn hình 02:58] ghi hình
+  document.getElementById('statusPill').style.display = 'none';
 
   const timer = document.getElementById('recTimer');
   timer.style.display = '';
-  timer.classList.remove('frozen');
+  timer.className = 'rec-timer live';
+  timer.title = 'Đang chép transcript';
+  document.getElementById('recTimerIco').textContent = '';
 
   isSessionActive  = true;
   isSessionStopped = false;
+  refreshQuickRec();
 }
 
 function showStoppedView() {
@@ -375,16 +377,17 @@ function showStoppedView() {
   document.getElementById('stopBtn').style.display   = 'none';
   document.getElementById('resumeBtn').style.display = '';
 
-  const pill = document.getElementById('statusPill');
-  pill.className = 'status-pill stopped';
-  pill.innerHTML = '<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><rect width="8" height="8" rx="1.5"/></svg> Tạm dừng';
+  document.getElementById('statusPill').style.display = 'none';
 
   const timer = document.getElementById('recTimer');
   timer.style.display = '';
-  timer.classList.add('frozen');
+  timer.className = 'rec-timer paused';
+  timer.title = 'Transcript đang tạm dừng';
+  document.getElementById('recTimerIco').textContent = 'II';
 
   isSessionActive  = false;
   isSessionStopped = true;
+  refreshQuickRec();
 }
 
 function showInactiveView() {
@@ -393,11 +396,15 @@ function showInactiveView() {
   document.getElementById('view-minutes').style.display  = 'none';
 
   const pill = document.getElementById('statusPill');
+  pill.style.display = '';
   pill.className = 'status-pill';
+  pill.title = '';
   pill.innerHTML = 'Chưa hoạt động';
 
   document.getElementById('recTimer').style.display = 'none';
   timerReset();
+  closeStartPanel();
+  refreshQuickRec();
 
   // Always clear error messages when returning to home screen
   const errEl = document.getElementById('errorMsg');
@@ -650,6 +657,18 @@ function showTabError(msg) {
 
 // ── sendToTab helper ──────────────────────────────────────────────
 // silent:true suppresses error display — use for cleanup/best-effort actions
+// Nạp lại content script vào tab họp đang mở (sau khi reload extension) — thay cho F5
+async function reinjectContent(tabId) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    try { await chrome.scripting.insertCSS({ target: { tabId }, files: ['styles.css'] }); } catch (_) {}
+    await new Promise(r => setTimeout(r, 300));     // chờ script khôi phục transcript đã lưu
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function sendToTab(message, onSuccess, onError, opts = {}) {
   showTabError('');
   const fail = (msg) => {
@@ -663,14 +682,26 @@ function sendToTab(message, onSuccess, onError, opts = {}) {
       fail('Không thể chạy trên trang này.');
       return;
     }
+    const isMeeting = /^https:\/\/(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|([a-z0-9-]+\.)?zoom\.us)\//.test(tab.url);
     chrome.tabs.sendMessage(tab.id, message, res => {
-      if (chrome.runtime.lastError) {
-        // Hay gặp nhất: vừa cập nhật/reload extension nên content script cũ
-        // trong tab họp đã chết, tab chưa được tải lại nên chưa có script mới.
-        fail('Mất kết nối với trang họp — nhấn F5 tải lại trang họp rồi thử lại.');
+      if (!chrome.runtime.lastError) { if (onSuccess) onSuccess(res); return; }
+      if (!isMeeting) {
+        fail('Trang này không phải cuộc họp (Meet / Teams / Zoom). Mở tab cuộc họp rồi bấm lại.');
         return;
       }
-      if (onSuccess) onSuccess(res);
+      // Hay gặp nhất: vừa cập nhật/reload extension nên content script cũ trong
+      // tab họp đã chết. Nạp lại script vào tab (KHÔNG F5 → không bị rời cuộc họp)
+      // rồi gửi lại lệnh một lần.
+      reinjectContent(tab.id).then(ok => {
+        if (!ok) { fail('Mất kết nối với trang họp và không nạp lại được — nhấn F5 tải lại trang họp rồi thử lại.'); return; }
+        chrome.tabs.sendMessage(tab.id, message, res2 => {
+          if (chrome.runtime.lastError) {
+            fail('Mất kết nối với trang họp — nhấn F5 tải lại trang họp rồi thử lại.');
+            return;
+          }
+          if (onSuccess) onSuccess(res2);
+        });
+      });
     });
   });
 }
@@ -685,21 +716,150 @@ function hasUsableKey(r) {
 }
 
 // ── Start ─────────────────────────────────────────────────────────
+// Bấm Bắt đầu → mở bảng chọn cách ghi hình. Mỗi lần mở đều chọn sẵn Tab + 1080p
+// (bấm nhanh "Bắt đầu" lần nữa là xong); micro theo lựa chọn đã lưu ở tab Record.
+const $id = id => document.getElementById(id);
+
+function startPanelChoice() {
+  const src = document.querySelector('input[name="startSrc"]:checked')?.value || 'tab';
+  const q   = $id('startQuality').value;
+  return { source: src, quality: q === 'audio' ? '720p' : q, mode: q === 'audio' ? 'audio' : 'video', mic: $id('startMic').checked };
+}
+
+let startPanelRec = null;     // { liveAi, running } — đọc khi mở bảng
+
+function syncStartPanel() {
+  const c = startPanelChoice();
+  const running = startPanelRec && startPanelRec.running;
+  document.querySelector('#startPanel .rec-sources').style.display = running ? 'none' : '';
+  $id('startOpts').style.display = running || c.source === 'none' ? 'none' : '';
+  const lines = [];
+  if (running) lines.push(running);
+  else if (c.source === 'display') lines.push('Chrome sẽ hiện hộp chọn. Muốn có tiếng người khác: chọn "Toàn màn hình" và bật "Chia sẻ âm thanh hệ thống".');
+  else if (c.source === 'none') lines.push('Chỉ lấy transcript, không ghi hình.');
+  else lines.push('Đang ghi vẫn đổi được sang màn hình / tab đang share trong tab Record (cùng một video).');
+  if (!running && c.source !== 'none' && startPanelRec && startPanelRec.liveAi) {
+    lines.push('⚠ Đang bật "AI chép lời trong lúc ghi": âm thanh được gửi lên Gemini/OpenAI. Tắt ở tab Record nếu không muốn.');
+  }
+  $id('startHint').textContent = lines.join('\n');
+}
+
+function openStartPanel() {
+  const tabRadio = document.querySelector('input[name="startSrc"][value="tab"]');
+  if (tabRadio) tabRadio.checked = true;
+  $id('startQuality').value = '1080p';
+  startPanelRec = null;
+  chrome.storage.local.get(['mt_rec_prefs', 'mt_rec_state'], r => {
+    const p = r?.mt_rec_prefs || {}, st = r?.mt_rec_state || {};
+    $id('startMic').checked = p.mic !== false;
+    const live = ['starting', 'recording', 'paused', 'saving'].includes(st.status);
+    startPanelRec = {
+      liveAi: !!p.liveAi,
+      running: live ? `Đang có bản ghi (${st.source === 'display' ? 'màn hình' : 'tab'}) — sẽ ghi tiếp bản này.` : ''
+    };
+    syncStartPanel();
+  });
+  syncStartPanel();
+  $id('startBtn').style.display = 'none';
+  $id('startPanel').style.display = '';
+  $id('startGoBtn').focus();
+}
+
+// Không dùng $id: hàm này được showInactiveView() gọi, có thể trước khi $id khai báo
+function closeStartPanel() {
+  const p = document.getElementById('startPanel');
+  if (p) p.style.display = 'none';
+  const b = document.getElementById('startBtn');
+  if (b) b.style.display = '';
+}
+
+document.querySelectorAll('input[name="startSrc"]').forEach(r => r.addEventListener('change', syncStartPanel));
+$id('startQuality').addEventListener('change', syncStartPanel);
+$id('startCancelBtn').addEventListener('click', closeStartPanel);
+
+// Bắt transcript + ghi hình KHÔNG cần API key — key chỉ cần khi tạo Summary / 議事録
 document.getElementById('startBtn').addEventListener('click', () => {
-  chrome.storage.sync.get(['aiProvider', 'aiFailover', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], r => {
-    if (!hasUsableKey(r)) {
-      document.getElementById('errorMsg').textContent = 'Vào Settings và lưu AI API Key trước!';
-      return;
+  document.getElementById('errorMsg').textContent = '';
+  openStartPanel();
+});
+
+$id('startGoBtn').addEventListener('click', () => {
+  const choice = startPanelChoice();
+  showEndNotice({});
+  closeStartPanel();
+  sendToTab({ action: 'start' }, () => {
+    showActiveView();
+    timerStartFresh();
+    // Ghi hình theo lựa chọn vừa chọn (lưu luôn vào tuỳ chọn của tab Record)
+    if (choice.source !== 'none') {
+      recCtl('start', choice).then(err => { if (err) showTabError('Ghi hình: ' + err); });
     }
-    sendToTab({ action: 'start' }, () => {
-      showActiveView();
-      timerStartFresh();
+  }, () => {
+    // Không phải tab họp (vd. họp bằng app Teams/Zoom) → không có transcript,
+    // nhưng ghi Màn hình vẫn làm được
+    if (choice.source === 'display') {
+      recCtl('start', choice).then(err => {
+        showTabError(err ? 'Ghi hình: ' + err
+          : 'Không có transcript ở trang này — đang ghi màn hình. Xem / dừng ở tab Record.');
+      });
+    }
+  });
+});
+
+// Control là bảng điều khiển chính: Tạm dừng / Tiếp tục / Kết thúc ở đây kéo
+// theo bản ghi (tab Record). Thao tác ở tab Record không ảnh hưởng Control.
+function recCtl(fn, ...args) {
+  try {
+    const p = self.RecControl?.[fn]?.(...args);
+    return p ? p.catch(() => {}) : Promise.resolve();
+  } catch (_) { return Promise.resolve(); }
+}
+
+// Sau Kết thúc: báo bản ghi đã lưu (kèm mở Thư viện) hoặc lưu lỗi
+function showEndNotice(res) {
+  const box = $id('endNotice');
+  if (!box) return;
+  box.className = 'end-notice' + (res.error ? ' err' : '');
+  box.style.display = (res.recId || res.error) ? '' : 'none';
+  $id('endNoticeText').textContent = res.error
+    ? 'Lưu bản ghi hình thất bại: ' + res.error
+    : 'Đã lưu bản ghi hình vào Thư viện.';
+  $id('endNoticeOpen').style.display = res.recId ? '' : 'none';
+  $id('endNoticeOpen').onclick = () => chrome.tabs.create({
+    url: chrome.runtime.getURL('recordings.html') + (res.recId ? '#' + encodeURIComponent(res.recId) : '')
+  });
+}
+
+// Đang họp mà chưa ghi hình (chọn "Không ghi" / đã dừng ở tab Record) → nút
+// ghi nhanh ngay trên Control, khỏi phải tìm sang tab Record
+// Không dùng $id: được gọi từ showActiveView()/showInactiveView(), có thể trước khi $id khai báo
+function syncQuickRec(st) {
+  const btn = document.getElementById('quickRecBtn');
+  if (!btn) return;
+  const live = st && ['starting', 'recording', 'paused', 'saving'].includes(st.status);
+  btn.style.display = !live && (isSessionActive || isSessionStopped) ? '' : 'none';
+}
+function refreshQuickRec() {
+  chrome.storage.local.get('mt_rec_state', r => syncQuickRec(r?.mt_rec_state));
+}
+chrome.storage.local.get('mt_rec_state', r => syncQuickRec(r?.mt_rec_state));
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === 'local' && ch.mt_rec_state) syncQuickRec(ch.mt_rec_state.newValue);
+});
+$id('quickRecBtn').addEventListener('click', () => {
+  chrome.storage.local.get('mt_rec_prefs', r => {
+    const p = r?.mt_rec_prefs || {};
+    $id('quickRecBtn').disabled = true;
+    recCtl('start', { source: 'tab', quality: '1080p', mode: 'video', mic: p.mic !== false }).then(err => {
+      $id('quickRecBtn').disabled = false;
+      if (err) showTabError('Ghi hình: ' + err);
     });
   });
 });
 
 // ── Tạm dừng ─────────────────────────────────────────────────────
 document.getElementById('stopBtn').addEventListener('click', () => {
+  recCtl('pause');
   sendToTab({ action: 'stop' }, () => {
     showStoppedView();
     timerPause();
@@ -711,25 +871,29 @@ document.getElementById('stopBtn').addEventListener('click', () => {
 
 // ── Tiếp tục ─────────────────────────────────────────────────────
 document.getElementById('resumeBtn').addEventListener('click', () => {
-  chrome.storage.sync.get(['aiProvider', 'aiFailover', 'geminiApiKey', 'openaiApiKey', 'deepseekApiKey'], r => {
-    if (!hasUsableKey(r)) {
-      // resumeBtn nằm TRONG view-active → phải báo qua showTabError(), ghi
-      // thẳng vào #errorMsg thì user không thấy gì.
-      showTabError('Vào Settings và lưu AI API Key trước!');
-      return;
-    }
-    sendToTab({ action: 'start' }, () => {
-      showActiveView();
-      timerResume();
-    });
+  sendToTab({ action: 'start' }, () => {
+    showActiveView();
+    timerResume();
+    recCtl('resume');
   });
 });
 
 // ── Kết thúc ─────────────────────────────────────────────────────
 document.getElementById('newSessionBtn').addEventListener('click', () => {
-  showConfirm('Kết thúc phiên này?\nToàn bộ transcript và biên bản họp sẽ bị xóa.', async () => {
+  showConfirm('Kết thúc phiên này?\nTranscript và biên bản họp sẽ bị xóa (vẫn tải lại được trong Thư viện bản ghi).\nNếu đang ghi hình: bản ghi được dừng và lưu vào Thư viện bản ghi (giữ 15 bản gần nhất, tối đa 7 ngày).', async () => {
     // Save to history BEFORE clearing data
     await saveToHistory();
+
+    // Dừng & lưu bản ghi TRƯỚC khi reset content script: lúc lưu, background
+    // còn cần lấy transcript có mốc thời gian từ tab họp (reset_saved xoá mất).
+    const endBtn = $id('newSessionBtn');
+    const endHtml = endBtn.innerHTML;
+    endBtn.disabled = true;
+    endBtn.textContent = 'Đang lưu...';
+    const recEnd = (await recCtl('endSession')) || {};
+    endBtn.disabled = false;
+    endBtn.innerHTML = endHtml;
+    showEndNotice(recEnd);
 
     const wasRecording = isSessionActive;
 
@@ -803,12 +967,46 @@ document.getElementById('copyTranscriptBtn').addEventListener('click', () => {
 });
 
 // ── Download transcript ───────────────────────────────────────────
-document.getElementById('dlScriptBtn').addEventListener('click', () => {
-  if (!currentLiveKey) return;
-  chrome.storage.local.get([currentLiveKey], r => {
+// Tải cả transcript và bản ghi hình/âm của phiên (nếu có)
+document.getElementById('dlScriptBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('dlScriptBtn');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const btnHtml = btn.innerHTML;
+  let gotScript = false, gotRec = false;
+  try {
+    gotScript = await downloadScriptFile();
+    const mk = currentLiveKey ? currentLiveKey.replace(LIVE_PREFIX, '') : '';
+    btn.textContent = 'Đang chuẩn bị...';
+    const file = self.RecControl ? await self.RecControl.currentFile(mk) : null;
+    if (file) {
+      // Tách nhịp với file transcript để Chrome không chặn "tải nhiều file"
+      if (gotScript) await new Promise(r => setTimeout(r, 400));
+      downloadBlobFile(file.blob, file.name);
+      gotRec = true;
+    }
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = btnHtml;
+  }
+  flashBtn('dlScriptBtn', gotScript && gotRec ? 'Đã tải 2 file'
+    : (gotScript || gotRec) ? 'Đã tải' : 'Chưa có gì để tải');
+});
+
+function downloadBlobFile(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);  // file lớn: thu hồi muộn
+}
+
+function downloadScriptFile() {
+  if (!currentLiveKey) return Promise.resolve(false);
+  return new Promise(resolve => chrome.storage.local.get([currentLiveKey], r => {
     const data = r?.[currentLiveKey];
     const text = data?.savedTranscript?.trim() || '';
-    if (!text) return;
+    if (!text) { resolve(false); return; }
     const now      = new Date();
     const mode     = data?.captionMode || 'Meeting';
     const platform = mode.includes('meet') ? 'GoogleMeet' : mode.includes('teams') ? 'Teams' : mode.includes('zoom') ? 'Zoom' : 'Meeting';
@@ -822,8 +1020,9 @@ document.getElementById('dlScriptBtn').addEventListener('click', () => {
       '='.repeat(50), '', text
     ].join('\n');
     downloadText(header, `Script_${platform}_${date}_${time}.txt`);
-  });
-});
+    resolve(true);
+  }));
+}
 
 // ═════════════════════════════════════════════════════════════════
 // LIVE TRANSLATE v2 — dịch trực tiếp nội dung tab Transcript sang tiếng Việt
@@ -1776,175 +1975,8 @@ document.getElementById('clearMinutesBtn').addEventListener('click', () => {
   hideMinutesView();
 });
 
-// ─────────────────────────────────────────────────────────────────
-// DOCX GENERATOR (minimal ZIP + OOXML, no external deps)
-// ─────────────────────────────────────────────────────────────────
+// (Bộ tạo .docx đã chuyển sang docx.js — nạp trước popup.js trong popup.html)
 
-function escXml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-function buildDocxBlob(text) {
-  // Strip control chars invalid in XML 1.0
-  const safe  = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
-
-  const paras = safe.split('\n').map(line => {
-    if (!line.trim()) return '<w:p/>';
-    return '<w:p>' +
-      '<w:r><w:rPr><w:rFonts w:eastAsia="Meiryo" w:cs="Meiryo"/></w:rPr>' +
-      '<w:t xml:space="preserve">' + escXml(line) + '</w:t></w:r>' +
-      '</w:p>';
-  }).join('');
-
-  const docXml =
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<w:document' +
-    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' +
-    ' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"' +
-    ' xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"' +
-    ' xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"' +
-    ' mc:Ignorable="w14">' +
-    '<w:body>' + paras +
-    '<w:sectPr>' +
-    '<w:pgSz w:w="11906" w:h="16838"/>' +
-    '<w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/>' +
-    '</w:sectPr></w:body></w:document>';
-
-  const settingsXml =
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-    '<w:defaultTabStop w:val="720"/></w:settings>';
-
-  const contentTypes =
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-    '<Default Extension="xml" ContentType="application/xml"/>' +
-    '<Override PartName="/word/document.xml"' +
-    ' ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
-    '<Override PartName="/word/settings.xml"' +
-    ' ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>' +
-    '</Types>';
-
-  const pkgRels =
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-    '<Relationship Id="rId1"' +
-    ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"' +
-    ' Target="word/document.xml"/></Relationships>';
-
-  const docRels =
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-    '<Relationship Id="rId1"' +
-    ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"' +
-    ' Target="settings.xml"/></Relationships>';
-
-  return zipToBlob([
-    { name: '[Content_Types].xml',          text: contentTypes },
-    { name: '_rels/.rels',                  text: pkgRels      },
-    { name: 'word/document.xml',            text: docXml       },
-    { name: 'word/settings.xml',            text: settingsXml  },
-    { name: 'word/_rels/document.xml.rels', text: docRels      }
-  ], 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-}
-
-// Lazy CRC-32 table
-let _crcTable = null;
-function getCrcTable() {
-  if (_crcTable) return _crcTable;
-  _crcTable = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    _crcTable[i] = c;
-  }
-  return _crcTable;
-}
-
-function crc32bytes(data) {
-  const t   = getCrcTable();
-  let   crc = 0xFFFFFFFF;
-  for (let i = 0; i < data.length; i++) crc = t[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
-  return (crc ^ 0xFFFFFFFF) >>> 0;
-}
-
-function u16(v) { return [v & 0xff, (v >> 8) & 0xff]; }
-function u32(v) { return [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]; }
-
-function zipToBlob(files, mimeType) {
-  const enc     = new TextEncoder();
-  const entries = files.map(f => {
-    const nameBytes = enc.encode(f.name);
-    const dataBytes = enc.encode(f.text);
-    return { nameBytes, dataBytes, crc: crc32bytes(dataBytes) };
-  });
-
-  const parts   = [];
-  const offsets = [];
-  let offset    = 0;
-
-  for (const e of entries) {
-    offsets.push(offset);
-    const hdr = new Uint8Array([
-      0x50,0x4b,0x03,0x04,
-      20,0, 0,0, 0,0, 0,0,0,0,
-      ...u32(e.crc),
-      ...u32(e.dataBytes.length),
-      ...u32(e.dataBytes.length),
-      ...u16(e.nameBytes.length),
-      0,0,
-      ...e.nameBytes
-    ]);
-    parts.push(hdr, e.dataBytes);
-    offset += hdr.length + e.dataBytes.length;
-  }
-
-  const cdOffset = offset;
-  for (let i = 0; i < entries.length; i++) {
-    const e  = entries[i];
-    const cd = new Uint8Array([
-      0x50,0x4b,0x01,0x02,             // central dir signature
-      20,0,                             // version made by
-      20,0,                             // version needed
-      0,0,                              // general purpose flags
-      0,0,                              // compression method (STORE)
-      0,0,0,0,                         // last mod time + date
-      ...u32(e.crc),                    // CRC-32
-      ...u32(e.dataBytes.length),       // compressed size
-      ...u32(e.dataBytes.length),       // uncompressed size
-      ...u16(e.nameBytes.length),       // file name length
-      0,0,                              // extra field length
-      0,0,                              // file comment length
-      0,0,                              // disk number start
-      0,0,                              // internal file attributes  ← 2 bytes, not 4
-      0,0,0,0,                         // external file attributes
-      ...u32(offsets[i]),               // relative offset of local header
-      ...e.nameBytes
-    ]);
-    parts.push(cd);
-    offset += cd.length;
-  }
-
-  const cdSize = offset - cdOffset;
-  const eocd   = new Uint8Array([
-    0x50,0x4b,0x05,0x06,
-    0,0, 0,0,
-    ...u16(entries.length),
-    ...u16(entries.length),
-    ...u32(cdSize),
-    ...u32(cdOffset),
-    0,0
-  ]);
-  parts.push(eocd);
-
-  const total = parts.reduce((s, p) => s + p.length, 0);
-  const buf   = new Uint8Array(total);
-  let   pos   = 0;
-  for (const p of parts) { buf.set(p, pos); pos += p.length; }
-
-  return new Blob([buf], { type: mimeType });
-}
 
 // ── Utility ───────────────────────────────────────────────────────
 function pad(n) { return String(n).padStart(2, '0'); }
@@ -1970,12 +2002,8 @@ function flashBtn(id, label) {
 // ─────────────────────────────────────────────────────────────────
 
 const HISTORY_KEY     = 'mt_history';
-const HISTORY_MAX     = 3;
+const HISTORY_MAX     = 15;
 const HISTORY_TTL_MS  = 7 * 24 * 60 * 60 * 1000;
-
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
 
 function saveToHistory() {
   if (!currentLiveKey) return Promise.resolve();
@@ -2039,92 +2067,10 @@ function pruneExpiredHistory() {
   });
 }
 
-function renderHistory() {
-  const container = document.getElementById('historyList');
-  if (!container) return;
-
-  chrome.storage.local.get([HISTORY_KEY], r => {
-    const history = (r?.[HISTORY_KEY] || []).filter(e => Date.now() - e.date < HISTORY_TTL_MS);
-
-    if (!history.length) {
-      container.innerHTML = '<div class="history-empty">Chưa có lịch sử cuộc họp.</div>';
-      return;
-    }
-
-    const dlIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
-      '<path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/></svg>';
-    const trashIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
-      '<line x1="2.5" y1="4.5" x2="13.5" y2="4.5"/>' +
-      '<path d="M4.5 4.5V13a1.5 1.5 0 0 0 1.5 1.5h4A1.5 1.5 0 0 0 11.5 13V4.5"/>' +
-      '<path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/></svg>';
-
-    container.innerHTML = history.map((entry, idx) => {
-      const d = new Date(entry.date);
-      const dateStr = `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      const platformLabel = entry.platform === 'meet' ? 'Google Meet'
-                          : entry.platform === 'teams' ? 'Teams'
-                          : entry.platform === 'zoom' ? 'Zoom' : 'Meeting';
-      const platformCls = entry.platform === 'meet' ? 'hp-meet'
-                        : entry.platform === 'teams' ? 'hp-teams'
-                        : entry.platform === 'zoom' ? 'hp-zoom' : 'hp-other';
-      return `<div class="history-item" data-idx="${idx}">
-          <div class="history-item-header">
-            <span class="history-title" title="${escHtml(entry.title)}">${escHtml(entry.title)}</span>
-            <button class="history-delete-btn" data-idx="${idx}" title="Xóa">${trashIcon}</button>
-          </div>
-          <div class="history-meta">
-            <span class="history-platform ${platformCls}">${platformLabel}</span>
-            <span class="history-date">${dateStr}</span>
-          </div>
-          <div class="history-actions">
-            <button class="history-dl-btn" data-idx="${idx}" data-type="transcript">${dlIcon} Script</button>
-            <button class="history-dl-btn" data-idx="${idx}" data-type="minutes" ${!entry.minutes ? 'disabled' : ''}>${dlIcon} Minutes</button>
-          </div>
-        </div>`;
-    }).join('');
-
-    container.querySelectorAll('.history-delete-btn').forEach(btn => {
-      btn.addEventListener('click', () => deleteHistoryEntry(parseInt(btn.dataset.idx)));
-    });
-    container.querySelectorAll('.history-dl-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (btn.disabled) return;
-        downloadHistoryEntry(parseInt(btn.dataset.idx), btn.dataset.type);
-      });
-    });
-  });
-}
-
-function deleteHistoryEntry(idx) {
-  chrome.storage.local.get([HISTORY_KEY], r => {
-    let history = r?.[HISTORY_KEY] || [];
-    history.splice(idx, 1);
-    chrome.storage.local.set({ [HISTORY_KEY]: history }, () => renderHistory());
-  });
-}
-
-function downloadHistoryEntry(idx, type) {
-  chrome.storage.local.get([HISTORY_KEY], r => {
-    const history = r?.[HISTORY_KEY] || [];
-    const entry = history[idx];
-    if (!entry) return;
-
-    const d = new Date(entry.date);
-    const datePrefix = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
-
-    if (type === 'transcript') {
-      const header = [
-        '='.repeat(50),
-        `Meeting Script — ${entry.title}`,
-        `Date: ${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`,
-        '='.repeat(50), '', entry.transcript
-      ].join('\n');
-      downloadText(header, `Script_${datePrefix}.txt`);
-    } else if (type === 'minutes' && entry.minutes) {
-      downloadText(entry.minutes, `Minutes_${datePrefix}.txt`);
-    }
-  });
-}
+// Lịch sử cuộc họp (script + video + âm thanh) xem / tải trong Thư viện bản ghi
+document.getElementById('openLibFromSettings')?.addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('recordings.html') });
+});
 
 // ── Bootstrap ─────────────────────────────────────────────────────
 pruneExpiredHistory();

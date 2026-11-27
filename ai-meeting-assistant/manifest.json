@@ -1,12 +1,15 @@
 {
   "manifest_version": 3,
   "name": "AI Meeting Assistant",
-  "version": "4.9",
-  "description": "Real-time Japanese meeting assistant with speaker diarization and standby capture.",
+  "version": "7.1",
+  "description": "Real-time Japanese meeting assistant with speaker diarization, standby capture and tab / window / screen recording.",
   "permissions": [
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "tabCapture",
+    "offscreen",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://meet.google.com/*",
@@ -14,7 +17,10 @@
     "https://teams.live.com/*",
     "https://app.zoom.us/*",
     "https://zoom.us/*",
-    "https://*.zoom.us/*"
+    "https://*.zoom.us/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.openai.com/*",
+    "https://api.deepseek.com/*"
   ],
   "icons": {
     "16":  "icons/icon-16.png",
@@ -24,7 +30,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "AI Meeting Assistant 4.9",
+    "default_title": "AI Meeting Assistant 7.1",
     "default_icon": {
       "16":  "icons/icon-16.png",
       "32":  "icons/icon-32.png",
@@ -40,9 +46,9 @@
       "suggested_key": { "default": "Alt+Shift+M" },
       "description": "Bật/tắt AI Meeting Assistant"
     },
-    "toggle-minimize": {
-      "suggested_key": { "default": "Alt+Shift+H" },
-      "description": "Thu nhỏ / khôi phục overlay"
+    "rec-mark": {
+      "suggested_key": { "default": "Alt+Shift+K" },
+      "description": "Đánh dấu khoảnh khắc quan trọng khi đang ghi"
     }
   },
   "content_scripts": [

@@ -1,5 +1,16 @@
 // content.js — AI Meeting Assistant v6.0.0 (Popup-based UI, no overlay)
 
+// Toàn bộ script nằm trong MỘT KHỐI { }: let/const chỉ sống trong khối này.
+// Lý do: reload/cập nhật extension xong, script cũ trong tab họp vẫn còn (mồ côi)
+// trong cùng "isolated world". Nạp lại content.js vào tab mà không bọc khối sẽ
+// lỗi "Identifier ... has already been declared" → không chạy được, buộc phải F5
+// (F5 = rời cuộc họp). Bọc khối thì nạp lại được bất cứ lúc nào.
+{ // MT_CONTENT_BLOCK_OPEN
+
+// Bản mới vừa nạp → báo cho bản cũ (mồ côi) trong tab tự tắt, tránh hai bản cùng
+// bắt phụ đề. Sự kiện DOM đi qua được giữa các bản; gửi TRƯỚC khi tự đăng ký nghe.
+try { window.dispatchEvent(new CustomEvent('mt-content-reloaded')); } catch (_) {}
+
 // ── Global state ────────────────────────────────────────────────
 let isProcessing   = false;
 let isRecognizing  = false;
@@ -43,9 +54,16 @@ const STORAGE_PREFIX      = 'mt_buf:';
 const LIVE_PREFIX         = 'mt_live:';
 const GIJI_PREFIX         = 'mt_giji:';
 const HISTORY_KEY         = 'mt_history';
-const HISTORY_MAX         = 3;
+const HISTORY_MAX         = 15;   // script cuộc họp: giữ 15 phiên gần nhất (cùng số với bản ghi hình)
 const HISTORY_TTL_MS      = 7 * 24 * 60 * 60 * 1000;
 const HISTORY_MIN_CHARS   = 20;
+
+// Timeline: mỗi câu đã chốt kèm mốc Date.now() lúc bắt đầu nói. Dùng để
+// transcript KHỚP với video ghi hình (tính năng Record). Tách khỏi fullSegments
+// vì fullSegments gộp các câu liên tiếp của cùng người nói → mất mốc thời gian.
+const TL_PREFIX           = 'mt_tl:';
+const TIMELINE_MAX        = 8000;   // ~ vài giờ họp; quá thì bỏ câu cũ nhất
+let   timeline            = [];     // [{ t, s, x }]
 
 // ── Platform detection ──────────────────────────────────────────
 function detectPlatform() {
@@ -606,6 +624,7 @@ function scheduleCommitInterim() {
 }
 
 function commitInterimNow() {
+  const utteranceStartedAt = interimStartedAt;   // mốc bắt đầu câu, cho timeline
   interimStartedAt = 0;
   if (!interimSegment) return;
   let textToCommit = interimSegment.text;
@@ -618,7 +637,7 @@ function commitInterimNow() {
     if (!interimSegment._onCommit) meetFallbackBase = interimSegment.text;
   }
   if (textToCommit && textToCommit.trim().length >= 2) {
-    addFinalSegment(interimSegment.speaker, textToCommit);
+    addFinalSegment(interimSegment.speaker, textToCommit, utteranceStartedAt);
     syncTranscript();
   }
   // Post-commit callback (Teams: register in processedKeys + advance base)
@@ -1706,13 +1725,45 @@ function switchToCC(platform, container) {
 }
 
 // ── Shared helpers ──────────────────────────────────────────────
-function addFinalSegment(speaker, text) {
+// startedAt (tuỳ chọn): lúc câu bắt đầu xuất hiện. Không có thì lấy lúc chốt.
+function addFinalSegment(speaker, text, startedAt) {
   if (!text?.trim()) return;
   if (!speakerMap[speaker]) speakerMap[speaker] = Object.keys(speakerMap).length + 1;
   const last = fullSegments[fullSegments.length - 1];
   if (last && last.speaker === speaker) last.text += ' ' + text.trim();
   else fullSegments.push({ speaker, text: text.trim() });
   appendToSaved(speaker, text);
+  pushTimeline(speaker, text, startedAt);
+}
+
+function pushTimeline(speaker, text, startedAt) {
+  const x = String(text || '').trim();
+  if (!x) return;
+  timeline.push({ t: startedAt > 0 ? startedAt : Date.now(), s: speaker, x });
+  if (timeline.length > TIMELINE_MAX) timeline = timeline.slice(-TIMELINE_MAX);
+}
+
+function persistTimeline(key) {
+  if (!timeline.length) return;
+  try {
+    chrome.storage.local.set({ [TL_PREFIX + key]: { items: timeline, savedAt: Date.now() } });
+  } catch(_) {}
+}
+
+function restoreTimelineIfAny() {
+  return new Promise(resolve => {
+    const key = TL_PREFIX + meetingKey(location.href);
+    try {
+      chrome.storage.local.get([key], r => {
+        const p = r?.[key];
+        if (p && Array.isArray(p.items) && !timeline.length &&
+            Date.now() - (p.savedAt || 0) <= BUFFER_MAX_AGE_MS) {
+          timeline = p.items.slice(-TIMELINE_MAX);
+        }
+        resolve();
+      });
+    } catch(_) { resolve(); }
+  });
 }
 
 function cleanMeetingTitle(raw) {
@@ -1812,6 +1863,7 @@ function stopAll() {
   isProcessing = false;
   const key = meetingKey(location.href);
   persistBuffer(key);
+  persistTimeline(key);
   upsertHistory(key);
   setBadge('', '');
   saveToLiveStorage();
@@ -1832,6 +1884,22 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       capturing: !!captureActive,
       captionMode,
       lines:     savedTranscript.trim().split('\n').filter(Boolean).length
+    });
+  } else if (req.action === 'get_timeline') {
+    // Cho tính năng Record: các câu từ mốc `since` + câu đang nói dở (chưa chốt)
+    const since = Number(req.since) || 0;
+    let interim = null;
+    if (interimSegment?.text) {
+      let x = interimSegment.text;
+      const base = interimSegment.fallbackBase;
+      if (base && x.startsWith(base)) x = x.slice(base.length);
+      x = x.trim();
+      if (x.length >= 2) interim = { t: interimStartedAt || Date.now(), s: interimSegment.speaker, x };
+    }
+    sendResponse({
+      items: timeline.filter(e => e.t >= since),
+      interim,
+      mk: meetingKey(location.href)
     });
   } else if (req.action === 'clear_transcript') {
     fullSegments = []; interimSegment = null; fullTranscript = '';
@@ -1854,8 +1922,9 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     fullSegments = []; fullTranscript = ''; interimSegment = null;
     interimStartedAt = 0;
     speakerMap = {}; currentSpeaker = 'Speaker 1'; lastFinalTime = 0;
+    timeline = [];
     const key = STORAGE_PREFIX + meetingKey(location.href);
-    try { chrome.storage.local.remove([key]); } catch(_) {}
+    try { chrome.storage.local.remove([key, TL_PREFIX + meetingKey(location.href)]); } catch(_) {}
     saveToLiveStorage();
     setBadge('', '');
     sendResponse({ ok: true });
@@ -2011,6 +2080,7 @@ function watchUrlChanges() {
       // Always persist + save to history before wiping buffers — leaving the
       // meeting mid-recording must not lose the transcript (active or standby)
       persistBuffer(oldKey);
+      persistTimeline(oldKey);
       upsertHistory(oldKey);
       resetBuffersInMemory();
       stopStandbyCapture();
@@ -2032,6 +2102,7 @@ function resetBuffersInMemory() {
   speakerMap      = {};
   currentSpeaker  = 'Speaker 1';
   lastFinalTime   = 0;
+  timeline        = [];
   resetCaptionDedupState();
 }
 
@@ -2042,6 +2113,7 @@ function startAutosave() {
     if (!captureActive && !overlayActive) return;
     const key = meetingKey(location.href);
     persistBuffer(key);
+    persistTimeline(key);
     upsertHistory(key);
   }, AUTOSAVE_MS);
 }
@@ -2073,7 +2145,7 @@ function sameSessionTranscript(a, b) {
 function upsertHistory(key, title) {
   let transcript = (savedTranscript || '').trim();
   if (!transcript || transcript.length < HISTORY_MIN_CHARS) return;
-  // Cap entry size so 3 history entries can't blow the storage quota
+  // Cap entry size so 15 history entries can't blow the storage quota
   const capped = transcript.length > BUFFER_MAX_CHARS;
   if (capped) transcript = transcript.slice(-BUFFER_MAX_CHARS);
   const gijiKey = GIJI_PREFIX + key;
@@ -2107,7 +2179,12 @@ function upsertHistory(key, title) {
   } catch(_) {}
 }
 
+// Nạp lại transcript + timeline đã lưu (F5 giữa cuộc họp / giữa lúc ghi hình)
 function restoreBufferIfAny() {
+  return Promise.all([restoreTranscriptBuffer(), restoreTimelineIfAny()]).then(() => {});
+}
+
+function restoreTranscriptBuffer() {
   return new Promise(resolve => {
     const key = STORAGE_PREFIX + meetingKey(location.href);
     try {
@@ -2147,12 +2224,91 @@ function rebuildSegmentsFromSaved() {
   syncTranscript();
 }
 
+// ── Nút mic trong cuộc họp → micro của bản ghi hình ──────────────
+// Extension mở micro RIÊNG (getUserMedia), không biết người dùng đã mute trong
+// Teams/Meet/Zoom. Khi đang ghi có micro: đọc nút mic của trang mỗi giây, báo
+// background để tắt/bật tiếng micro trong bản ghi. Không đọc được → null →
+// giữ micro bật (an toàn: không làm mất giọng nói).
+const MIC_UNMUTE_RE = /unmute|turn on (the )?mic|ミュート.{0,3}解除|マイクをオン|bật (mic|micrô|micro)|bật tiếng|bỏ tắt tiếng|join audio|オーディオに参加|tham gia âm thanh/i;
+const MIC_MUTE_RE   = /\bmute\b|turn off (the )?mic|ミュート|マイクをオフ|tắt (mic|micrô|micro)|tắt tiếng/i;
+const NOT_MIC_RE    = /camera|video|カメラ|ビデオ|máy ảnh/i;
+
+function micMutedFromButton(b) {
+  if (!b) return null;
+  const dm = b.getAttribute('data-is-muted');               // Google Meet
+  if (dm === 'true') return true;
+  if (dm === 'false') return false;
+  const ds = (b.getAttribute('data-state') || '').toLowerCase();   // Teams: "mic" / "mic-off"
+  if (/mic/.test(ds)) return /off/.test(ds);
+  const label = (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
+  if (MIC_UNMUTE_RE.test(label)) return true;               // nút đang mời "bật mic" → mic đang tắt
+  if (MIC_MUTE_RE.test(label))   return false;
+  return null;
+}
+
+function readMeetingMicMuted() {
+  const p = detectPlatform();
+  let btn = null;
+  if (p === 'teams') {
+    btn = document.querySelector('#microphone-button, [data-tid="microphone-button"], [data-inp="microphone-button"]');
+  } else if (p === 'meet') {
+    btn = [...document.querySelectorAll('[data-is-muted]')].find(b => {
+      const l = b.getAttribute('aria-label') || '';
+      return /mic|マイク/i.test(l) && !NOT_MIC_RE.test(l);
+    });
+  } else if (p === 'zoom') {
+    btn = document.querySelector('.join-audio-container__btn') ||
+      [...document.querySelectorAll('button[aria-label]')].find(b => {
+        const l = b.getAttribute('aria-label') || '';
+        return /microphone|マイク|join audio|オーディオに参加/i.test(l) && !NOT_MIC_RE.test(l);
+      });
+  }
+  return micMutedFromButton(btn);
+}
+
+let _micRecOn = false, _micLast, _micTimer = null;
+function pushMeetingMic(force) {
+  if (!_micRecOn) return;
+  let m = null;
+  try { m = readMeetingMicMuted(); } catch (_) {}
+  if (!force && m === _micLast) return;
+  _micLast = m;
+  try { chrome.runtime.sendMessage({ action: 'meeting_mic', muted: m }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+}
+function syncMicWatch(st) {
+  const on = !!st && st.mic && ['recording', 'paused'].includes(st.status);
+  const startedNow = on && !_micRecOn;
+  _micRecOn = on;
+  if (on && !_micTimer) _micTimer = setInterval(() => pushMeetingMic(false), 1000);
+  if (!on && _micTimer) { clearInterval(_micTimer); _micTimer = null; }
+  if (startedNow) pushMeetingMic(true);     // bản ghi mới bắt đầu: báo ngay trạng thái hiện tại
+}
+try {
+  chrome.storage.local.get('mt_rec_state', r => syncMicWatch(r?.mt_rec_state));
+  chrome.storage.onChanged.addListener((ch, area) => {
+    if (area !== 'local' || !ch.mt_rec_state) return;
+    const nv = ch.mt_rec_state.newValue || {}, ov = ch.mt_rec_state.oldValue || {};
+    if (nv.recId !== ov.recId) _micRecOn = false;           // bản ghi khác → coi như mới bắt đầu
+    syncMicWatch(nv);
+  });
+} catch (_) {}
+
 // ── Page unload — best-effort save (autosave is the 15s safety net) ──
 window.addEventListener('pagehide', () => {
   const key = meetingKey(location.href);
   persistBuffer(key);
+  persistTimeline(key);
   upsertHistory(key);
 });
+
+// Bị bản mới thay thế (extension vừa reload) → dừng mọi bộ quan sát / hẹn giờ
+window.addEventListener('mt-content-reloaded', () => {
+  try { stopAll(); } catch (_) {}
+  try { stopStandbyCapture(); } catch (_) {}
+  [urlWatchTimer, autosaveTimer, _micTimer, ccPollTimer, ccWatchdog, speechWatchdog]
+    .forEach(t => { try { clearInterval(t); } catch (_) {} });
+  try { if (captionObserver) captionObserver.disconnect(); } catch (_) {}
+}, { once: true });
 
 // ── Bootstrap ───────────────────────────────────────────────────
 (function bootstrap() {
@@ -2163,3 +2319,5 @@ window.addEventListener('pagehide', () => {
   startAutosave();
   restoreBufferIfAny().then(() => startStandbyCapture());
 })();
+
+} // MT_CONTENT_BLOCK_CLOSE

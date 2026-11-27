@@ -40,7 +40,13 @@
       font-weight: 700;
       flex: 1;
       white-space: nowrap;
+      /* Header chật (đang chép + đang ghi) → tiêu đề tự rút gọn "…" thay vì
+         đẩy chấm / timer / pill ghi hình ra ngoài popup */
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
+    .p-header > :not(.header-title) { flex-shrink: 0; }
     .status-pill {
       font-size: 10px;
       font-weight: 600;
@@ -75,6 +81,11 @@
       white-space: nowrap;
     }
     .rec-timer.frozen { opacity: .55; }
+    .rec-timer { display: inline-flex; align-items: center; gap: 5px; }
+    .rec-timer.live   { background: #34a853; color: #fff; }
+    .rec-timer.paused { background: #f9ab00; color: #fff; }
+    .rec-timer .t-ico { display: inline-flex; align-items: center; font-size: 9px; letter-spacing: 0; }
+    .rec-timer.live .t-ico { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: blink 1.4s infinite; }
 
     /* ── Tabs ── */
     .tabs {
@@ -150,6 +161,26 @@
     .btn-blue { background: #1a73e8; color: #fff; }
     .btn-blue:hover { background: #1557b0; }
     .btn-blue:disabled { background: #bdbdbd; cursor: not-allowed; }
+
+    /* ── Bảng chọn khi bấm Bắt đầu ── */
+    .start-panel { border: 1px solid #dadce0; border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+    .start-panel input[type=radio], .start-panel input[type=checkbox] { width: auto; margin: 0; padding: 0; }
+    .start-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: #3c4043; margin: 0 0 8px; font-weight: 600; }
+    .start-row select { width: auto; margin: 0; padding: 4px 6px; font-size: 12px; }
+    .start-check { justify-content: flex-start; font-weight: 400; cursor: pointer; }
+    .start-hint { font-size: 10.5px; color: #80868b; margin-bottom: 8px; line-height: 1.45; white-space: pre-line; }
+    .end-notice { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #137333; background: #e6f4ea; border-radius: 6px; padding: 7px 9px; margin-bottom: 8px; }
+    .end-notice span { flex: 1; }
+    .end-notice.err { color: #c5221f; background: #fce8e6; }
+    .quick-rec-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 0 8px; padding: 5px 8px; font-size: 11.5px; font-weight: 600; color: #c5221f; background: #fff; border: 1px dashed #f28b82; border-radius: 6px; cursor: pointer; }
+    .quick-rec-btn:hover { background: #fce8e6; }
+    .quick-rec-btn:disabled { opacity: .6; cursor: default; }
+    .quick-rec-btn .q-dot { width: 7px; height: 7px; border-radius: 50%; background: #d93025; }
+    .start-hint:empty { display: none; }
+    .start-btns { display: flex; gap: 6px; }
+    .start-btns .btn { margin: 0; }
+    .start-cancel { flex: 0 0 30%; background: #f1f3f4; color: #3c4043; }
+    .start-cancel:hover { background: #e8eaed; }
 
     /* ── Section ── */
     .p-section { margin-bottom: 8px; }
@@ -592,6 +623,14 @@
     .btn-test:hover { background: #e8f0fe; }
     .btn-test:disabled { opacity: .6; cursor: not-allowed; }
     .btn-test svg { width: 12px; height: 12px; }
+    .lib-note { font-size: 12px; color: #5f6368; line-height: 1.5; margin: 0 0 8px; }
+    .lib-open-btn {
+      display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px;
+      border: 1px solid #1a73e8; border-radius: 6px; background: #fff; color: #1a73e8;
+      font-size: 12.5px; font-weight: 600; cursor: pointer;
+    }
+    .lib-open-btn:hover { background: #e8f0fe; }
+    .lib-open-btn svg { width: 14px; height: 14px; }
     .section-title-settings {
       font-size: 12px;
       font-weight: 700;
@@ -627,96 +666,6 @@
     .failover-row label { margin: 0; cursor: pointer; font-size: 12px; color: #3c4043; }
     .failover-row label .sub { display: block; font-size: 10px; color: #80868b; margin-top: 3px; line-height: 1.45; }
     .note svg { flex-shrink: 0; margin-top: 1px; width: 12px; height: 12px; }
-
-    /* ── History section ── */
-    .history-empty {
-      font-size: 11px;
-      color: #9aa0a6;
-      font-style: italic;
-      padding: 12px 0;
-      text-align: center;
-    }
-    .history-item {
-      background: #f8f9fa;
-      border: 1px solid #e8eaed;
-      border-radius: 8px;
-      padding: 10px;
-      margin-bottom: 8px;
-      transition: border-color .15s;
-    }
-    .history-item:hover { border-color: #dadce0; }
-    .history-item-header {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-bottom: 4px;
-    }
-    .history-title {
-      font-size: 12px;
-      font-weight: 600;
-      color: #202124;
-      flex: 1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .history-delete-btn {
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 2px;
-      color: #5f6368;
-      border-radius: 4px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-    .history-delete-btn:hover { color: #c5221f; background: #fce8e6; }
-    .history-delete-btn svg { width: 14px; height: 14px; }
-    .history-meta {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
-    .history-platform {
-      font-size: 10px;
-      font-weight: 600;
-      padding: 1px 6px;
-      border-radius: 10px;
-    }
-    .history-platform.hp-meet { background: #e8f0fe; color: #1a73e8; }
-    .history-platform.hp-teams { background: #ede7f6; color: #512da8; }
-    .history-platform.hp-zoom { background: #e3f2fd; color: #2962ff; }
-    .history-platform.hp-other { background: #e6f4ea; color: #137333; }
-    .history-date {
-      font-size: 10px;
-      color: #80868b;
-    }
-    .history-actions {
-      display: flex;
-      gap: 6px;
-    }
-    .history-dl-btn {
-      flex: 1;
-      background: #fff;
-      border: 1px solid #dadce0;
-      border-radius: 6px;
-      padding: 5px 8px;
-      font-size: 11px;
-      font-weight: 600;
-      color: #1a73e8;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-      transition: background .15s;
-    }
-    .history-dl-btn:hover { background: #e8f0fe; }
-    .history-dl-btn:disabled { opacity: .4; cursor: not-allowed; }
-    .history-dl-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
 
     /* ICO spin */
     @keyframes ico-spin { to { transform: rotate(360deg); } }
@@ -774,6 +723,151 @@
       cursor: pointer;
     }
     .btn-c-ok:hover { background: #c5221f; }
+
+    /* ══ RECORD (ghi hình tab) ══ */
+    .rec-pill {
+      font-size: 10px; font-weight: 700;
+      padding: 3px 8px; border-radius: 10px;
+      background: #d93025; color: #fff;
+      display: inline-flex; align-items: center; gap: 4px;
+      white-space: nowrap; cursor: pointer; border: none;
+      font-variant-numeric: tabular-nums;
+    }
+    .rec-pill.paused { background: #f9ab00; }
+    .rec-pill.saving { background: #5f6368; }
+    .r-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    .rec-pill .r-dot { background: #fff; animation: blink 1.4s infinite; }
+    .rec-pill.paused .r-dot, .rec-pill.saving .r-dot { animation: none; }
+
+    .rec-body { padding: 12px; }
+    .rec-body input[type=radio], .rec-body input[type=checkbox] { width: auto; margin: 0; padding: 0; }
+    .rec-target {
+      display: flex; gap: 6px; align-items: center;
+      font-size: 11px; color: #3c4043;
+      background: #f1f3f4; border-radius: 6px;
+      padding: 6px 9px; margin-bottom: 10px; min-width: 0;
+    }
+    .rec-target svg { width: 13px; height: 13px; flex-shrink: 0; color: #5f6368; }
+    .rec-target span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .rec-label {
+      font-size: 10px; font-weight: 700; letter-spacing: .05em;
+      text-transform: uppercase; color: #5f6368; margin-bottom: 5px;
+    }
+    .rec-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+    label.rec-mode { display: block; margin: 0; cursor: pointer; font-weight: 400; position: relative; }
+    .rec-mode input { position: absolute; opacity: 0; pointer-events: none; }
+    .rec-mode-box {
+      display: flex; flex-direction: column; gap: 2px;
+      border: 1.5px solid #dadce0; border-radius: 8px;
+      padding: 8px 10px; background: #fff;
+      transition: border-color .15s, background .15s;
+    }
+    .rec-mode-box b { font-size: 12px; color: #202124; display: inline-flex; align-items: center; gap: 5px; }
+    .rec-mode-box b svg { width: 13px; height: 13px; flex-shrink: 0; }
+    .rec-mode-box small { font-size: 10px; color: #80868b; }
+    .rec-mode:hover .rec-mode-box { border-color: #aecbfa; }
+    .rec-mode input:checked + .rec-mode-box { border-color: #d93025; background: #fef7f6; }
+    .rec-mode input:checked + .rec-mode-box b { color: #c5221f; }
+    .rec-mode input:focus-visible + .rec-mode-box { outline: 2px solid #1a73e8; outline-offset: 1px; }
+
+    .rec-sources { display: flex; background: #f1f3f4; border-radius: 8px; padding: 3px; gap: 3px; margin-bottom: 10px; }
+    label.rec-src { flex: 1; margin: 0; cursor: pointer; position: relative; font-weight: 600; }
+    .rec-src input { position: absolute; opacity: 0; pointer-events: none; }
+    .rec-src span {
+      display: flex; align-items: center; justify-content: center; gap: 5px;
+      font-size: 11.5px; color: #5f6368; padding: 6px 4px; border-radius: 6px; white-space: nowrap;
+    }
+    .rec-src span svg { width: 13px; height: 13px; flex-shrink: 0; }
+    .rec-src input:checked + span { background: #fff; color: #c5221f; box-shadow: 0 1px 2px rgba(0,0,0,.14); }
+    .rec-src input:focus-visible + span { outline: 2px solid #1a73e8; outline-offset: 1px; }
+    .rec-display-hint {
+      font-size: 10.5px; line-height: 1.5; color: #3c4043;
+      background: #e8f0fe; border-radius: 6px; padding: 7px 9px; margin-bottom: 10px;
+    }
+    .rec-display-hint b { color: #174ea6; }
+
+    .rec-opt {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: #3c4043; margin-bottom: 8px;
+    }
+    label.rec-opt { font-weight: 400; margin-bottom: 8px; cursor: pointer; }
+    .rec-opt select { width: auto; flex: 1; min-width: 0; margin: 0; padding: 5px 7px; text-overflow: ellipsis; }
+    .rec-opt .rec-opt-name { flex-shrink: 0; min-width: 78px; }
+    .rec-opt-hint { font-size: 10px; color: #80868b; margin: -4px 0 8px 24px; }
+
+    .rec-consent {
+      display: flex; gap: 6px; align-items: flex-start;
+      font-size: 10.5px; line-height: 1.45; color: #8a5300;
+      background: #fef7e0; border-radius: 6px; padding: 6px 9px; margin: 4px 0 8px;
+    }
+    .rec-consent svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 1px; }
+
+    .btn-red { background: #d93025; color: #fff; }
+    .btn-red:hover { background: #b3261e; }
+    .btn-red:disabled { background: #bdbdbd; cursor: not-allowed; }
+
+    .rec-live-card {
+      border: 1.5px solid #f6aea9; background: #fef7f6;
+      border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+    }
+    .rec-live-card.paused { border-color: #fdd663; background: #fef9e6; }
+    .rec-live-card.saving { border-color: #dadce0; background: #f8f9fa; }
+    .rec-live-top { display: flex; align-items: center; gap: 7px; }
+    .rec-live-top .r-dot { width: 9px; height: 9px; color: #d93025; animation: blink 1.4s infinite; }
+    .rec-live-card.paused .r-dot { color: #f9ab00; animation: none; }
+    .rec-live-card.saving .r-dot { color: #9aa0a6; animation: none; }
+    .rec-live-status { font-size: 12px; font-weight: 700; color: #202124; }
+    .rec-clock { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; color: #202124; letter-spacing: .02em; }
+    .rec-live-title {
+      font-size: 12px; color: #3c4043; margin-top: 6px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .rec-live-meta { font-size: 10.5px; color: #80868b; margin-top: 2px; }
+    .rec-other-tab { font-size: 11px; color: #3c4043; margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+    .rec-actions { display: flex; gap: 6px; margin-bottom: 8px; }
+    .rec-switch-row { margin-bottom: 10px; }
+    .rec-switch-btn {
+      width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      border: 1px solid #1a73e8; background: #e8f0fe; color: #1a73e8;
+      border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .rec-switch-btn svg { width: 14px; height: 14px; }
+    .rec-switch-btn:disabled { opacity: .6; cursor: default; }
+    .rec-switch-info { font-size: 10.5px; color: #80868b; margin-top: 4px; text-align: center; }
+    .rec-switch-info.err { color: #c5221f; }
+    .rec-mark-row { display: flex; gap: 6px; margin-bottom: 4px; }
+    .rec-mark-row input { flex: 1; min-width: 0; margin: 0; padding: 6px 8px; font-size: 12px; }
+    .rec-mark-btn {
+      display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+      border: 1px solid #f9ab00; background: #fef7e0; color: #b06000;
+      border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .rec-mark-btn:hover { background: #feefc3; }
+    .rec-mark-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .rec-mark-btn svg { width: 13px; height: 13px; }
+    .rec-mark-info { font-size: 10.5px; color: #80868b; margin-bottom: 8px; min-height: 13px; }
+
+    .rec-notice {
+      display: flex; gap: 8px; align-items: center;
+      font-size: 11px; color: #137333;
+      background: #e6f4ea; border-radius: 6px; padding: 7px 9px; margin-bottom: 8px;
+    }
+    .rec-notice svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .rec-notice .rec-notice-text { flex: 1; min-width: 0; line-height: 1.4; }
+    .rec-notice b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #202124; }
+
+    .rec-lib-btn {
+      width: 100%; display: flex; align-items: center; gap: 7px;
+      background: #fff; border: 1px solid #dadce0; border-radius: 8px;
+      padding: 8px 10px; font-size: 12px; font-weight: 600; color: #3c4043;
+      cursor: pointer; margin-top: 4px;
+    }
+    .rec-lib-btn:hover { background: #f8f9fa; border-color: #aecbfa; color: #1a73e8; }
+    .rec-lib-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .rec-lib-count {
+      margin-left: auto; font-size: 10px; font-weight: 700;
+      background: #e8eaed; color: #5f6368; border-radius: 9px; padding: 1px 7px;
+    }
   </style>
 </head>
 <body>
@@ -790,7 +884,12 @@
     </div>
     <span class="header-title">AI Meeting Assistant</span>
     <span class="status-pill" id="statusPill">Chưa hoạt động</span>
-    <span class="rec-timer" id="recTimer" style="display:none">00:00</span>
+    <!-- Transcript: một khối duy nhất = trạng thái + đồng hồ (xanh: đang chép · vàng: tạm dừng) -->
+    <span class="rec-timer" id="recTimer" style="display:none"><span class="t-ico" id="recTimerIco"></span><span id="recTimerText">00:00</span></span>
+    <!-- Đang ghi hình: hiện ở mọi tab của popup, bấm để mở tab Record -->
+    <button class="rec-pill" id="recPill" style="display:none" title="Đang ghi hình — bấm để xem">
+      <span class="r-dot"></span><span id="recPillText">REC</span>
+    </button>
   </div>
 
   <!-- ── Tabs ── -->
@@ -798,6 +897,10 @@
     <button class="tab-btn active" data-tab="control">
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
       Control
+    </button>
+    <button class="tab-btn" data-tab="record">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.6" fill="currentColor" stroke="none"/></svg>
+      Record
     </button>
     <button class="tab-btn" data-tab="settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -825,6 +928,39 @@
         <span>Chưa cài API key. Vào Settings.</span>
       </div>
       <div class="err-msg" id="errorMsg"></div>
+      <!-- Sau Kết thúc: báo bản ghi hình đã lưu / lưu lỗi -->
+      <div class="end-notice" id="endNotice" style="display:none">
+        <span id="endNoticeText"></span>
+        <button class="icon-btn blue" id="endNoticeOpen" type="button">Mở Thư viện</button>
+      </div>
+      <!-- Bấm Bắt đầu → chọn cách ghi hình trước (mặc định Tab + 1080p) -->
+      <div class="start-panel" id="startPanel" style="display:none">
+        <div class="rec-label">Ghi hình</div>
+        <div class="rec-sources" role="radiogroup" aria-label="Ghi hình">
+          <label class="rec-src"><input type="radio" name="startSrc" value="tab" checked><span>Tab</span></label>
+          <label class="rec-src"><input type="radio" name="startSrc" value="display"><span>Màn hình</span></label>
+          <label class="rec-src"><input type="radio" name="startSrc" value="none"><span>Không ghi</span></label>
+        </div>
+        <div class="start-opts" id="startOpts">
+          <label class="start-row">Chất lượng
+            <select id="startQuality">
+              <option value="720p">720p</option>
+              <option value="1080p" selected>1080p</option>
+              <option value="1440p">2K</option>
+              <option value="audio">Chỉ tiếng (không hình)</option>
+            </select>
+          </label>
+          <label class="start-row start-check"><input type="checkbox" id="startMic"> Ghi kèm micro (giọng bạn)</label>
+        </div>
+        <div class="start-hint" id="startHint"></div>
+        <div class="start-btns">
+          <button class="btn start-cancel" id="startCancelBtn" type="button">Huỷ</button>
+          <button class="btn btn-blue" id="startGoBtn" type="button">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
+            Bắt đầu
+          </button>
+        </div>
+      </div>
       <button class="btn btn-blue" id="startBtn">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
         Bắt đầu
@@ -839,6 +975,10 @@
              #errorMsg nằm trong view-inactive nên bị ẩn khi đang ghi — mọi lỗi
              của nút Reload / Xóa trước đây ghi vào đó và user không thấy gì. -->
         <div class="err-msg" id="activeErrorMsg" style="display:none"></div>
+        <!-- Đang họp mà chưa ghi hình → ghi nhanh (Tab · 1080p) -->
+        <button class="quick-rec-btn" id="quickRecBtn" type="button" style="display:none" title="Bắt đầu ghi hình tab này (1080p). Đổi sang màn hình ở tab Record.">
+          <span class="q-dot"></span> Chưa ghi hình · Ghi tab này
+        </button>
 
         <!-- Transcript / Translate -->
         <div class="p-section">
@@ -884,7 +1024,7 @@
               </svg>
               Copy
             </button>
-            <button class="icon-btn blue" id="dlScriptBtn" title="Tải transcript">
+            <button class="icon-btn blue" id="dlScriptBtn" title="Tải transcript + bản ghi hình/âm của phiên (nếu có)">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M8 2v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/><path d="M3 13h10"/>
               </svg>
@@ -1058,6 +1198,174 @@
   </div><!-- /tab-control -->
 
   <!-- ══════════════════════════════════════════
+       RECORD TAB — ghi hình / ghi âm tab (popup-record.js)
+  ══════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-record">
+    <div class="rec-body">
+
+      <!-- Vừa lưu xong -->
+      <div class="rec-notice" id="recSavedNotice" style="display:none">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg>
+        <span class="rec-notice-text">Đã lưu bản ghi<b id="recSavedTitle"></b><span id="recSavedMeta"></span></span>
+        <button class="icon-btn blue" id="recOpenSavedBtn">Mở</button>
+      </div>
+
+      <!-- ── Chưa ghi ── -->
+      <div id="rec-idle">
+        <div class="rec-label">Nguồn ghi</div>
+        <div class="rec-sources" role="radiogroup" aria-label="Nguồn ghi">
+          <label class="rec-src">
+            <input type="radio" name="recSource" value="tab" checked>
+            <span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M1.5 6h13"/></svg>Tab này</span>
+          </label>
+          <label class="rec-src">
+            <input type="radio" name="recSource" value="display">
+            <span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="9" rx="1.2"/><path d="M5.5 14h5"/><path d="M8 11.5V14"/></svg>Màn hình / cửa sổ</span>
+          </label>
+        </div>
+
+        <div class="rec-target" id="recTargetRow" title="Tab sẽ được ghi">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M1.5 6h13"/></svg>
+          <span id="recTargetTitle">Tab hiện tại</span>
+        </div>
+        <div class="rec-display-hint" id="recDisplayHint" style="display:none">
+          Bấm <b>Bắt đầu ghi</b> → Chrome hỏi bạn chọn <b>Toàn màn hình</b>, <b>Cửa sổ</b> hoặc <b>Tab</b>.<br>
+          Ghi app họp cài trên máy (Teams, Zoom…) có tiếng: chọn <b>Toàn màn hình</b> và bật <b>Chia sẻ âm thanh hệ thống</b> (Windows). Chọn <b>Cửa sổ</b> thì không có tiếng hệ thống, chỉ có micro.
+        </div>
+
+        <div class="rec-label">Chế độ ghi</div>
+        <div class="rec-modes">
+          <label class="rec-mode">
+            <input type="radio" name="recMode" value="video" checked>
+            <span class="rec-mode-box">
+              <b><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="4" width="9" height="8" rx="1.5"/><path d="M10.5 7l4-2.5v7l-4-2.5z"/></svg>Hình + tiếng</b>
+              <small>Video (.webm)</small>
+            </span>
+          </label>
+          <label class="rec-mode">
+            <input type="radio" name="recMode" value="audio">
+            <span class="rec-mode-box">
+              <b><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6.5v3h2.5L8 12.5v-9L4.5 6.5z"/><path d="M10.5 5.5a3.5 3.5 0 0 1 0 5"/><path d="M12.5 3.5a6.3 6.3 0 0 1 0 9"/></svg>Chỉ tiếng</b>
+              <small>Âm thanh (.webm)</small>
+            </span>
+          </label>
+        </div>
+
+        <label class="rec-opt">
+          <input type="checkbox" id="recMic" checked>
+          Ghi kèm micro của tôi
+        </label>
+        <div class="rec-opt-hint">Tiếng của tab / hệ thống không có giọng bạn. Bật micro để ghi cả hai bên.</div>
+        <div class="rec-opt" id="recMicRow">
+          <span class="rec-opt-name">Micro</span>
+          <select id="recMicSel" title="Micro dùng để ghi giọng bạn">
+            <option value="">Mặc định của hệ thống</option>
+          </select>
+        </div>
+
+        <label class="rec-opt">
+          <input type="checkbox" id="recLiveAi">
+          Chép lời bằng AI ngay trong lúc ghi
+        </label>
+        <div class="rec-opt-hint" id="recLiveAiHint">Dừng ghi là có transcript sau vài giây. Âm thanh được gửi tới Gemini/OpenAI theo từng đoạn 2 phút.</div>
+        <div id="recNamesWrap">
+          <label class="rec-opt">
+            <input type="checkbox" id="recNames">
+            Nhận diện tên người nói từ màn hình họp
+          </label>
+          <div class="rec-opt-hint" id="recNamesHint">Gửi kèm ảnh chụp cửa sổ họp (4 ảnh/phút) để Gemini đọc tên trên ô video và biết ai đang nói. Dùng được cả app Teams/Zoom. Ảnh có thể chứa nội dung đang chia sẻ màn hình.</div>
+        </div>
+
+        <div class="rec-opt" id="recQualityRow">
+          <span class="rec-opt-name">Độ phân giải</span>
+          <select id="recQuality">
+            <option value="720p">720p · tối đa ~0.7 GB/giờ</option>
+            <option value="1080p" selected>1080p · tối đa ~1.4 GB/giờ</option>
+            <option value="1440p">2K · tối đa ~2.3 GB/giờ</option>
+          </select>
+        </div>
+        <div class="rec-opt" id="recCodecRow">
+          <span class="rec-opt-name">Định dạng</span>
+          <select id="recCodec">
+            <option value="h264" selected>MP4 (H.264) · nhẹ máy, mở ở đâu cũng được</option>
+            <option value="vp9">WebM (VP9) · nét hơn, tốn CPU hơn</option>
+          </select>
+        </div>
+
+        <div class="rec-consent">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8L1.5 13.5h13z"/><line x1="8" y1="6.5" x2="8" y2="9.5"/><circle cx="8" cy="11.6" r=".5" fill="currentColor"/></svg>
+          <span>Người tham gia sẽ <b>không</b> nhận được thông báo ghi hình. Hãy xin phép mọi người trước khi ghi.</span>
+        </div>
+
+        <div class="err-msg" id="recError"></div>
+        <button class="btn btn-red" id="recStartBtn">
+          <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="5"/></svg>
+          Bắt đầu ghi
+        </button>
+      </div>
+
+      <!-- ── Đang ghi / tạm dừng / đang lưu ── -->
+      <div id="rec-live" style="display:none">
+        <div class="rec-live-card" id="recLiveCard">
+          <div class="rec-live-top">
+            <span class="r-dot"></span>
+            <span class="rec-live-status" id="recLiveStatus">Đang ghi</span>
+            <span class="spacer"></span>
+            <span class="rec-clock" id="recClock">00:00</span>
+          </div>
+          <div class="rec-live-title" id="recLiveTitle"></div>
+          <div class="rec-live-meta" id="recLiveMeta"></div>
+          <div class="rec-other-tab" id="recOtherTab" style="display:none">
+            <span>Bản ghi này thuộc một tab khác.</span>
+            <button class="icon-btn blue" id="recGotoTabBtn">Chuyển tới tab</button>
+          </div>
+          <div class="rec-other-tab" id="recPickWait" style="display:none">
+            <span>Chọn màn hình / cửa sổ trong hộp thoại của Chrome.</span>
+            <button class="icon-btn danger" id="recCancelPickBtn">Huỷ</button>
+          </div>
+        </div>
+        <div class="err-msg" id="recLiveError"></div>
+        <form class="rec-mark-row" id="recMarkForm">
+          <input id="recMarkNote" maxlength="200" placeholder="Ghi chú (tuỳ chọn)… vd: cần follow-up" autocomplete="off">
+          <button type="submit" class="rec-mark-btn" id="recMarkBtn" title="Đánh dấu thời điểm này (phím tắt Alt+Shift+K)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2.5h8v11L8 10.5 4 13.5z"/></svg>
+            Đánh dấu
+          </button>
+        </form>
+        <div class="rec-mark-info" id="recMarkInfo"></div>
+        <div class="rec-actions" id="recActions">
+          <button class="btn-pause" id="recPauseBtn">
+            <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg>
+            Tạm dừng
+          </button>
+          <button class="btn-resume-g" id="recResumeBtn" style="display:none">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>
+            Tiếp tục
+          </button>
+          <button class="btn-end" id="recStopBtn">
+            <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>
+            Dừng &amp; lưu
+          </button>
+        </div>
+        <!-- Đổi nguồn giữa chừng: vẫn ghi tiếp vào CÙNG một video -->
+        <div class="rec-switch-row" id="recSwitchRow" style="display:none">
+          <button class="rec-switch-btn" id="recSwitchBtn" type="button">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h10l-2.5-2.5"/><path d="M13.5 10.5h-10l2.5 2.5"/></svg>
+            <span id="recSwitchLabel">Chuyển sang ghi Màn hình</span>
+          </button>
+          <div class="rec-switch-info" id="recSwitchInfo"></div>
+        </div>
+      </div>
+
+      <button class="rec-lib-btn" id="recLibraryBtn">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6.5 6v4l3.5-2z" fill="currentColor"/></svg>
+        Thư viện bản ghi
+        <span class="rec-lib-count" id="recLibCount">0</span>
+      </button>
+    </div>
+  </div><!-- /tab-record -->
+
+  <!-- ══════════════════════════════════════════
        SETTINGS TAB
   ══════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-settings">
@@ -1181,7 +1489,11 @@
           </svg>
           Lịch sử cuộc họp
         </div>
-        <div id="historyList"></div>
+        <p class="lib-note">Script, 議事録, video và âm thanh của 15 cuộc họp gần nhất (giữ 7 ngày) nằm trong Thư viện bản ghi.</p>
+        <button class="lib-open-btn" id="openLibFromSettings" type="button">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12"/><path d="M6.5 8.5l3 1.5-3 1.5z"/></svg>
+          Mở Thư viện bản ghi
+        </button>
       </div>
     </div>
   </div><!-- /tab-settings -->
@@ -1197,6 +1509,10 @@
     </div>
   </div>
 
+  <script src="docx.js"></script>
+  <script src="rec-shared.js"></script>
+  <script src="rec-db.js"></script>
   <script src="popup.js"></script>
+  <script src="popup-record.js"></script>
 </body>
 </html>

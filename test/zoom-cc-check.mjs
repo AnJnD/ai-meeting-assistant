@@ -22,7 +22,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const contentSrc = fs.readFileSync(
-  path.join(__dirname, '..', 'ai-meeting-assistant', 'content.js'), 'utf8');
+  path.join(__dirname, '..', 'ai-meeting-assistant', 'content.js'), 'utf8')
+  // content.js bọc trong { } (để nạp lại được) — bỏ khối để test đọc được biến toàn cục
+  .replace('{ // MT_CONTENT_BLOCK_OPEN', '').replace('} // MT_CONTENT_BLOCK_CLOSE', '');
 
 // ───────────────────────── test bookkeeping ─────────────────────────
 let pass = 0, fail = 0;
